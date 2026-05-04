@@ -6,3 +6,5 @@ require (
 	github.com/brianvoe/gofakeit/v7 v7.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/klauspost/compress v1.18.6
