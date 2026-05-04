@@ -96,3 +96,61 @@ func equalRows(a, b [][]byte) bool {
 	}
 	return true
 }
+
+func TestWriter_PassthroughVerbatim(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.WritePassthrough([]byte(`val\tone`))
+	w.WritePassthrough([]byte("plain"))
+	w.WritePassthrough([]byte(`\N`))
+	if err := w.EndRow(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`val\tone` + "\t" + "plain" + "\t" + `\N` + "\n")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("got %q, want %q", buf.Bytes(), want)
+	}
+}
+
+func TestWriter_SubstitutedEscapes(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.WriteSubstituted([]byte("hello"))
+	w.WriteSubstituted([]byte("a\tb\nc"))
+	w.WriteSubstituted([]byte(`back\slash`))
+	w.EndRow()
+	w.Flush()
+	want := []byte(`hello` + "\t" + `a\tb\nc` + "\t" + `back\\slash` + "\n")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("got %q, want %q", buf.Bytes(), want)
+	}
+}
+
+func TestWriter_Null(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.WritePassthrough([]byte("Alice"))
+	w.WriteNULL()
+	w.WritePassthrough([]byte("a@x.com"))
+	w.EndRow()
+	w.Flush()
+	want := []byte("Alice" + "\t" + `\N` + "\t" + "a@x.com" + "\n")
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Errorf("got %q, want %q", buf.Bytes(), want)
+	}
+}
+
+func TestWriter_BytesWritten(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	w.WritePassthrough([]byte("a"))
+	w.WritePassthrough([]byte("bb"))
+	w.EndRow()
+	w.Flush()
+	if got := w.BytesWritten(); got != 5 {
+		t.Errorf("BytesWritten = %d, want 5", got)
+	}
+}
