@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"math/rand/v2"
+	"os"
 	"testing"
 )
 
@@ -216,6 +217,39 @@ func TestRoundtrip_FuzzedCells(t *testing.T) {
 		if !bytes.Equal(out.Bytes(), input) {
 			t.Fatalf("trial %d mismatch\ninput:  %q\noutput: %q", trial, input, out.Bytes())
 		}
+	}
+}
+
+func TestRoundtrip_MysqlshFixture(t *testing.T) {
+	input, err := os.ReadFile("../../testdata/fixtures/sample.tsv")
+	if err != nil {
+		t.Skipf("fixture not present: %v", err)
+	}
+	var out bytes.Buffer
+	r := NewReader(bytes.NewReader(input))
+	w := NewWriter(&out)
+	for {
+		cells, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		for _, c := range cells {
+			if err := w.WritePassthrough(c); err != nil {
+				t.Fatalf("WritePassthrough: %v", err)
+			}
+		}
+		if err := w.EndRow(); err != nil {
+			t.Fatalf("EndRow: %v", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), input) {
+		t.Errorf("fixture roundtrip mismatch (len in=%d out=%d)", len(input), out.Len())
 	}
 }
 
