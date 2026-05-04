@@ -3,6 +3,14 @@
 **Date:** 2026-05-03
 **Status:** approved (brainstorm), ready for implementation plan
 
+> **Errata (2026-05-04, after Task 1 fixture verification).** Three load-bearing assumptions in this document turned out to be wrong against real `mysqlsh` 9.7 / mysql 8.4 output. Ground truth lives in `testdata/fixtures/notes.md`; the body below is **not** updated in place except where noted, so callouts here are authoritative when they conflict:
+>
+> - **`.idx` is NOT per-row offsets.** It is a single 8-byte big-endian `uint64` giving the total decompressed length of its sibling `.zst` chunk. No header, no trailer, one record per chunk. Every other description of `.idx` in this doc — including the entire "`.idx` regeneration" section — must be read with this in mind. There is no random row access; consumers that need row offsets must scan the decompressed stream.
+> - **`compression` lives in the per-table JSON, not `@.json`.** The strict-check in step 4 of "Startup" must read `<schema>@<table>.json` (top-level `compression` field), not `@.json`. `@.json` has no `compression` key.
+> - **Per-table column array path is `options.columns`** (a JSON string array, in physical column order matching TSV cell order). The per-table JSON also exposes `options.fieldsTerminatedBy`, `linesTerminatedBy`, `fieldsEscapedBy`, `extension`, and `compression`; a robust loader should consult these rather than hard-code the dialect.
+> - **Chunk filename suffix:** non-final chunks are `<basename>@<n>.tsv.zst` (single `@`), final chunks are `<basename>@@<n>.tsv.zst` (double `@`). Single-chunk tables get `@@0`. The walker must match both patterns.
+> - **`bytesPerChunk` minimum is 128k** (mysqlsh hard-rejects smaller). Forcing multi-chunk in fixtures requires data > 128k.
+
 ## Purpose
 
 A CI tool that takes a `mysqlsh util.dumpInstance` directory, rewrites configured columns of configured tables with fake data, and emits a sibling directory in the same format that `util.loadDump` can consume into a staging database.

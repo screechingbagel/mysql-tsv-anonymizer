@@ -12,6 +12,20 @@
 
 ---
 
+## Errata from Task 1 — corrections to spec assumptions (READ FIRST)
+
+Task 1 ran `mysqlsh` 9.7 against `mysql:8.4` and committed the ground truth under `testdata/fixtures/` plus prose in `testdata/fixtures/notes.md`. The **spec and the original task descriptions below are wrong** in the following ways. Where the original code blocks below conflict with this errata, follow the errata.
+
+1. **`.idx` is a single 8-byte big-endian `uint64` of the sibling `.zst` chunk's total decompressed length.** Not per-row offsets, not a sequence. **Task 12** is rewritten in place below to reflect this; ignore the original "8-byte big-endian offsets, one per row" framing wherever it appears in this plan or the spec.
+2. **`compression: "zstd"` lives in the *per-table* JSON, not in `@.json`.** `@.json` has no `compression` field. The strict check belongs against `<schema>@<table>.json`. Affects **Task 10** (`InstanceMeta`/`TableMeta` shapes) and **Task 15** (the `mw("@.json", ...)` test fixture).
+3. **Per-table column list is at JSON path `options.columns`** (an array of strings in physical column order matching TSV cell order). `TableMeta` in Task 10 must use a nested struct, not a top-level `columns` tag.
+4. **Chunk filename convention has two forms:** non-final chunks are `<basename>@<n>.tsv.zst` (single `@`), final chunks are `<basename>@@<n>.tsv.zst` (double `@`). Single-chunk tables get `@@0`. Affects **Task 11** (manifest walker must match both).
+5. **`bytesPerChunk` minimum in mysqlsh is 128k.** Synthetic tests/fixtures that need multi-chunk output must exceed 128k; the integration fixture in **Task 19** can stay synthetic and skip this concern, but a real-mysqlsh fixture cannot use a smaller value.
+
+The body of the plan below has been patched at Tasks 10, 11, 12, and 15 to reflect these findings. Older sessions may still see references to the wrong shape if they read this plan from cache — anything that conflicts with this section is the bug.
+
+---
+
 ## Workflow conventions
 
 - **Commit cadence: at the end of each task.** The "Commit" step at the end of every task is the only place where the working copy is wrapped.
@@ -126,7 +140,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   xxd /tmp/fxdump/fx@t@@0.tsv.zst.idx | head -20
   wc -c /tmp/fxdump/fx@t@@0.tsv.zst.idx
   ```
-  Compare the `.idx` byte-length to the row count and to byte offsets of `\n` in the decompressed `.tsv`. The working hypothesis is "8-byte big-endian offsets, one per row, of decompressed-byte position at row end." Confirm or correct.
+  Compare the `.idx` byte-length to the row count and to byte offsets of `\n` in the decompressed `.tsv`. The original working hypothesis was "8-byte big-endian offsets, one per row, of decompressed-byte position at row end." **Outcome (recorded in `testdata/fixtures/notes.md` and the errata at the top of this plan):** disconfirmed — `.idx` is exactly 8 bytes, a single big-endian `uint64` of the chunk's total decompressed length. Tasks 12 and 17 below reflect this correction.
 
 - [ ] **Step 5: Inspect `@.json` and `fx@t.json`.**
   ```bash
@@ -1274,7 +1288,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 
 ## Task 10: Dump metadata loader (`internal/dump/meta.go`)
 
-**Goal:** Parse the dump's `@.json` and per-table `<schema>@<table>.json` using the structures confirmed in Task 1. The exact field names below assume the Task-1 fixture confirmed `compression` at top level and `columns` (or `basenames`) on the table side. Adjust to match `testdata/fixtures/notes.md`.
+**Goal:** Parse the dump's `@.json` and per-table `<schema>@<table>.json` using the structures confirmed in Task 1. **Per-Task-1 fixture (`testdata/fixtures/notes.md`):** `@.json` has no `compression` field; `compression` is top-level in the per-table JSON. Per-table `columns` array is at `options.columns`. The struct shapes below reflect this. `InstanceMeta` is reduced to format-discriminator fields (`version`); `TableMeta` carries `Compression` and `Columns`.
 
 **Files:**
 - Create: `internal/dump/meta.go`
@@ -1287,6 +1301,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 
   import (
       "path/filepath"
+      "strings"
       "testing"
   )
 
@@ -1295,8 +1310,9 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       if err != nil {
           t.Fatal(err)
       }
-      if meta.Compression != "zstd" {
-          t.Errorf("Compression = %q, want zstd", meta.Compression)
+      // @.json has no compression key; we only assert the version discriminator.
+      if !strings.HasPrefix(meta.Version, "2.") {
+          t.Errorf("Version = %q, want 2.x", meta.Version)
       }
   }
 
@@ -1305,14 +1321,18 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       if err != nil {
           t.Fatal(err)
       }
+      if meta.Compression != "zstd" {
+          t.Errorf("Compression = %q, want zstd", meta.Compression)
+      }
       // Task-1 fixture is a 3-column table (id, name, email).
+      cols := meta.Options.Columns
       want := []string{"id", "name", "email"}
-      if len(meta.Columns) != len(want) {
-          t.Fatalf("len(Columns) = %d, want %d (%v)", len(meta.Columns), len(want), meta.Columns)
+      if len(cols) != len(want) {
+          t.Fatalf("len(Options.Columns) = %d, want %d (%v)", len(cols), len(want), cols)
       }
       for i := range want {
-          if meta.Columns[i] != want[i] {
-              t.Errorf("Columns[%d] = %q, want %q", i, meta.Columns[i], want[i])
+          if cols[i] != want[i] {
+              t.Errorf("Options.Columns[%d] = %q, want %q", i, cols[i], want[i])
           }
       }
   }
@@ -1339,9 +1359,12 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   )
 
   // InstanceMeta is the subset of @.json that the anonymizer cares about.
+  // mysqlsh's @.json has no `compression` field — that lives in the per-table
+  // JSON. We use Version as a format-discriminator (must start with "2.").
   // See testdata/fixtures/notes.md for the full mysqlsh schema.
   type InstanceMeta struct {
-      Compression string `json:"compression"`
+      Version string `json:"version"`
+      Dumper  string `json:"dumper"`
   }
 
   func ReadInstanceMeta(path string) (*InstanceMeta, error) {
@@ -1357,11 +1380,20 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   }
 
   // TableMeta is the per-table sidecar JSON, restricted to the fields the
-  // anonymizer needs. Columns is in the same order as the chunk TSV cells.
+  // anonymizer needs. Columns are at JSON path options.columns, in physical
+  // column order matching the TSV cell order. Compression is top-level.
   type TableMeta struct {
-      // Field name confirmed in Task 1; adjust here if it's not "columns".
-      Columns []string `json:"columns"`
+      Compression string `json:"compression"`
+      Extension   string `json:"extension"`
+      Options     struct {
+          Columns            []string `json:"columns"`
+          FieldsTerminatedBy string   `json:"fieldsTerminatedBy"`
+          FieldsEscapedBy    string   `json:"fieldsEscapedBy"`
+          LinesTerminatedBy  string   `json:"linesTerminatedBy"`
+      } `json:"options"`
   }
+
+  // Note: callers reach columns via meta.Options.Columns (no helper getter).
 
   func ReadTableMeta(path string) (*TableMeta, error) {
       data, err := os.ReadFile(path)
@@ -1392,6 +1424,8 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 
 **Goal:** Walk a dump directory, classify every file, and present it as a `Manifest` keyed for the orchestrator's needs (per-table chunk lists, top-level files, etc.). Walk order is **lexicographic** for determinism.
 
+**Per-Task-1 fixture:** chunk filenames have **two forms** — non-final chunks are `<schema>@<table>@<n>.tsv.zst` (single `@` separator) and final chunks are `<schema>@<table>@@<n>.tsv.zst` (double `@@`). A single-chunk table has just `@@0`. The walker matches both; downstream code may use the `@@` form to recognize the final chunk if needed.
+
 **Files:**
 - Create: `internal/dump/manifest.go`
 - Modify: `internal/dump/dump_test.go`
@@ -1410,17 +1444,18 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       }
       // Top-level
       mustWrite("@.done.json", "{}")
-      mustWrite("@.json", `{"compression":"zstd"}`)
+      mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
       mustWrite("@.sql", "")
       // Schema
       mustWrite("fx.json", "{}")
       mustWrite("fx.sql", "")
-      // Table
-      mustWrite("fx@t.json", `{"columns":["id","email"]}`)
+      // Table — exercises BOTH chunk filename forms: single-@ for non-final,
+      // double-@@ for the final chunk (per testdata/fixtures/notes.md).
+      mustWrite("fx@t.json", `{"options":{"columns":["id","email"]}}`)
       mustWrite("fx@t.sql", "")
-      mustWrite("fx@t@@0.tsv.zst", "")
-      mustWrite("fx@t@@0.tsv.zst.idx", "")
-      mustWrite("fx@t@@1.tsv.zst", "")
+      mustWrite("fx@t@0.tsv.zst", "")     // non-final chunk: single @
+      mustWrite("fx@t@0.tsv.zst.idx", "")
+      mustWrite("fx@t@@1.tsv.zst", "")    // final chunk: double @@
       mustWrite("fx@t@@1.tsv.zst.idx", "")
 
       m, err := WalkManifest(dir)
@@ -1446,6 +1481,13 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       // Verify lexicographic ordering of chunks.
       if tbl.Chunks[0].Index != 0 || tbl.Chunks[1].Index != 1 {
           t.Errorf("chunk indices not in order: %+v", tbl.Chunks)
+      }
+      // Verify final-chunk discrimination (single @ vs double @@).
+      if tbl.Chunks[0].Final {
+          t.Errorf("Chunks[0] (single-@) reported as final")
+      }
+      if !tbl.Chunks[1].Final {
+          t.Errorf("Chunks[1] (double-@@) reported as non-final")
       }
   }
 
@@ -1507,9 +1549,15 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       Index    int
       DataPath string // <chunk>.tsv.zst
       IdxPath  string // <chunk>.tsv.zst.idx
+      Final    bool   // true if filename used the @@ separator (last chunk).
   }
 
-  var chunkRE = regexp.MustCompile(`^(.+)@@(\d+)\.tsv\.zst$`)
+  // Two filename forms (per testdata/fixtures/notes.md):
+  //   <basename>@<n>.tsv.zst   — non-final chunks
+  //   <basename>@@<n>.tsv.zst  — final chunks (single-chunk tables get @@0)
+  // The non-greedy `.+?` ensures the engine prefers the shortest basename, so
+  // the @@ alternative wins when present even though both could match.
+  var chunkRE = regexp.MustCompile(`^(.+?)(@@|@)(\d+)\.tsv\.zst$`)
 
   // WalkManifest scans dir non-recursively (mysqlsh dumpInstance produces a
   // flat directory) using os.ReadDir, which returns entries lexicographically
@@ -1545,7 +1593,8 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
           // Chunk?
           if mm := chunkRE.FindStringSubmatch(name); mm != nil {
               tableKey := mm[1]
-              idx, err := strconv.Atoi(mm[2])
+              sep := mm[2]
+              idx, err := strconv.Atoi(mm[3])
               if err != nil {
                   return nil, fmt.Errorf("dump: bad chunk index in %s: %w", name, err)
               }
@@ -1554,6 +1603,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
                   Index:    idx,
                   DataPath: full,
                   IdxPath:  full + ".idx",
+                  Final:    sep == "@@",
               })
               continue
           }
@@ -1595,7 +1645,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   }
   ```
 
-  Note the regex: `<schema>@<table>@@<n>.tsv.zst` — the first `@@` separates the table key from the chunk index.
+  Note: the chunk regex matches both `<schema>@<table>@<n>.tsv.zst` (non-final) and `<schema>@<table>@@<n>.tsv.zst` (final). The non-greedy `.+?` makes the engine try `@@` before `@`, so a final chunk like `fx@t@@0.tsv.zst` captures basename `fx@t`, separator `@@`, index `0`.
 
 - [ ] **Step 4: Run tests.**
   ```bash
@@ -1615,7 +1665,9 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 
 ## Task 12: `.idx` regenerator (`internal/idx`)
 
-**Goal:** Write a binary `.idx` sidecar matching the format confirmed in Task 1. The example below assumes "8-byte big-endian uint64 offsets, one per row, of cumulative decompressed bytes through end-of-row." If Task 1 found a different layout, edit `idx.go` accordingly.
+**Goal:** Write a `.idx` sidecar matching the format confirmed in Task 1: **a single 8-byte big-endian `uint64` carrying the total decompressed length of the sibling `.zst` chunk.** Not per-row offsets. Not a sequence. Just one record per chunk.
+
+The Writer API therefore exposes a single "set the decompressed length and flush" operation. The caller (the chunk-processing worker in Task 17) tracks the total via `tsv.Writer.BytesWritten()` and hands the final value to `idx.Write` after the chunk is closed.
 
 **Files:**
 - Create: `internal/idx/idx.go`
@@ -1633,37 +1685,44 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       "testing"
   )
 
-  func TestWriter_BasicOffsets(t *testing.T) {
+  func TestWrite_EncodesTotalLength(t *testing.T) {
       var buf bytes.Buffer
-      w := NewWriter(&buf)
-      w.RecordRowEnd(10)
-      w.RecordRowEnd(25)
-      w.RecordRowEnd(50)
-      if err := w.Close(); err != nil {
+      if err := Write(&buf, 183); err != nil {
           t.Fatal(err)
       }
-      // Expect 3 × 8 bytes big-endian.
-      want := make([]byte, 24)
-      binary.BigEndian.PutUint64(want[0:8], 10)
-      binary.BigEndian.PutUint64(want[8:16], 25)
-      binary.BigEndian.PutUint64(want[16:24], 50)
+      want := make([]byte, 8)
+      binary.BigEndian.PutUint64(want, 183)
       if !bytes.Equal(buf.Bytes(), want) {
           t.Errorf("got %x, want %x", buf.Bytes(), want)
       }
   }
 
-  func TestWriter_MatchesMysqlshFixture(t *testing.T) {
-      // We don't reproduce the exact .idx of an arbitrary mysqlsh chunk because
-      // that requires also reproducing its decompressed bytes exactly. Instead:
-      // verify our format matches the *structure* of mysqlsh's .idx — same
-      // length per record, same endianness — by reading the fixture and
-      // checking it's a multiple of 8.
+  func TestWrite_RoundtripsFixture(t *testing.T) {
+      // The fixture .idx is exactly 8 bytes: a big-endian uint64 of the
+      // decompressed length of sample.tsv.zst. Reading the fixture, decoding
+      // the length, and re-encoding it must produce the same bytes.
       data, err := os.ReadFile("../../testdata/fixtures/sample.idx")
       if err != nil {
-          t.Skipf("fixture not present (Task 1): %v", err)
+          t.Fatal(err)
       }
-      if len(data)%8 != 0 {
-          t.Errorf("fixture .idx is %d bytes (not multiple of 8); reconfirm format in Task 1 notes", len(data))
+      if len(data) != 8 {
+          t.Fatalf("fixture .idx is %d bytes, want exactly 8 (per Task 1 notes)", len(data))
+      }
+      length := binary.BigEndian.Uint64(data)
+
+      var buf bytes.Buffer
+      if err := Write(&buf, int64(length)); err != nil {
+          t.Fatal(err)
+      }
+      if !bytes.Equal(buf.Bytes(), data) {
+          t.Errorf("re-encoded .idx %x != fixture %x", buf.Bytes(), data)
+      }
+  }
+
+  func TestWrite_RejectsNegative(t *testing.T) {
+      var buf bytes.Buffer
+      if err := Write(&buf, -1); err == nil {
+          t.Error("expected error for negative length")
       }
   }
   ```
@@ -1673,44 +1732,30 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 - [ ] **Step 3: Implement.** Create `internal/idx/idx.go`:
 
   ```go
-  // Package idx writes the .idx sidecar that mysqlsh util.loadDump uses for
-  // parallel sub-chunk loading. Format: a sequence of 8-byte big-endian uint64
-  // offsets, one per row, recording cumulative decompressed bytes through
-  // end-of-row. Verified against testdata/fixtures/sample.idx in Task 1.
+  // Package idx writes the .idx sidecar that mysqlsh util.loadDump emits
+  // alongside each chunk. The format (verified against
+  // testdata/fixtures/sample.idx in Task 1) is a single 8-byte big-endian
+  // uint64 giving the total decompressed length of the sibling .zst chunk.
+  // It is not a sequence of per-row offsets and supports no random access.
   package idx
 
   import (
-      "bufio"
       "encoding/binary"
+      "fmt"
       "io"
   )
 
-  type Writer struct {
-      w   *bufio.Writer
-      buf [8]byte
-      err error
-  }
-
-  func NewWriter(w io.Writer) *Writer {
-      return &Writer{w: bufio.NewWriter(w)}
-  }
-
-  // RecordRowEnd records that bytesAtRowEnd cumulative decompressed bytes have
-  // been written through this row's terminator.
-  func (w *Writer) RecordRowEnd(bytesAtRowEnd int64) error {
-      if w.err != nil {
-          return w.err
+  // Write encodes decompressedLen as an 8-byte big-endian uint64 to w.
+  // Callers compute decompressedLen via tsv.Writer.BytesWritten() after
+  // closing the chunk's TSV stream.
+  func Write(w io.Writer, decompressedLen int64) error {
+      if decompressedLen < 0 {
+          return fmt.Errorf("idx: negative decompressed length %d", decompressedLen)
       }
-      binary.BigEndian.PutUint64(w.buf[:], uint64(bytesAtRowEnd))
-      _, w.err = w.w.Write(w.buf[:])
-      return w.err
-  }
-
-  func (w *Writer) Close() error {
-      if w.err != nil {
-          return w.err
-      }
-      return w.w.Flush()
+      var buf [8]byte
+      binary.BigEndian.PutUint64(buf[:], uint64(decompressedLen))
+      _, err := w.Write(buf[:])
+      return err
   }
   ```
 
@@ -1723,7 +1768,7 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   ```bash
   go fmt ./...
   go vet ./...
-  jj describe -m "feat(idx): write mysqlsh-format chunk index"
+  jj describe -m "feat(idx): write mysqlsh chunk index (decompressed length)"
   jj new
   ```
 
@@ -2179,17 +2224,18 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
           if err != nil {
               return nil, err
           }
-          colIdx := make(map[string]int, len(tm.Columns))
-          for i, c := range tm.Columns {
+          cols := tm.Options.Columns
+          colIdx := make(map[string]int, len(cols))
+          for i, c := range cols {
               colIdx[c] = i
           }
           for col := range tf.Columns {
               if _, ok := colIdx[col]; !ok {
-                  return nil, fmt.Errorf("validate: config references column %s.%s but it is not in the dump (have %v)", tableKey, col, tm.Columns)
+                  return nil, fmt.Errorf("validate: config references column %s.%s but it is not in the dump (have %v)", tableKey, col, cols)
               }
           }
           schemas[matched] = &tableSchema{
-              Columns:  tm.Columns,
+              Columns:  cols,
               ColIndex: colIdx,
           }
       }
@@ -2232,10 +2278,10 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
           }
       }
       mw("@.done.json", "{}")
-      mw("@.json", `{"compression":"zstd"}`)
+      mw("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
       mw("fx.json", "{}")
       mw("fx.sql", "")
-      mw("fx@users.json", `{"columns":["id","name","email"]}`)
+      mw("fx@users.json", `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email"],"fieldsTerminatedBy":"\t","fieldsEscapedBy":"\\","linesTerminatedBy":"\n"}}`)
       mw("fx@users.sql", "")
       mw("fx@users@@0.tsv.zst", "")
       mw("fx@users@@0.tsv.zst.idx", "")
@@ -2639,14 +2685,11 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       }
       tw := tsv.NewWriter(zw)
       tr := tsv.NewReader(zr)
-      iw := idx.NewWriter(idxF)
 
-      hook := func(bytesAtRowEnd int64) error {
-          if err := ctx.Err(); err != nil {
-              return err
-          }
-          return iw.RecordRowEnd(bytesAtRowEnd)
-      }
+      // Per-row hook is now used solely for cancellation polling — `.idx` is a
+      // single decompressed-length record written once after the chunk closes
+      // (see Task 12 / testdata/fixtures/notes.md), not a per-row sequence.
+      hook := func(_ int64) error { return ctx.Err() }
       if err := anon.ProcessAllWithRowHook(tr, tw, slots, f, hook); err != nil {
           return err
       }
@@ -2659,7 +2702,9 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
       if err := outF.Sync(); err != nil {
           return err
       }
-      if err := iw.Close(); err != nil {
+      // Now that zw is closed, tw.BytesWritten() is the total decompressed
+      // length of the .zst chunk — exactly what mysqlsh stores in .idx.
+      if err := idx.Write(idxF, tw.BytesWritten()); err != nil {
           return err
       }
       if err := idxF.Sync(); err != nil {
