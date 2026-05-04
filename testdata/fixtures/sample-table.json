@@ -1,0 +1,29 @@
+{
+    "options": {
+        "schema": "fx",
+        "table": "t",
+        "columns": [
+            "id",
+            "name",
+            "email"
+        ],
+        "defaultCharacterSet": "utf8mb4",
+        "fieldsTerminatedBy": "\t",
+        "fieldsEnclosedBy": "",
+        "fieldsOptionallyEnclosed": false,
+        "fieldsEscapedBy": "\\",
+        "linesTerminatedBy": "\n"
+    },
+    "triggers": [],
+    "includesData": true,
+    "includesDdl": true,
+    "extension": "tsv.zst",
+    "chunking": true,
+    "compression": "zstd",
+    "primaryIndex": [
+        "id"
+    ],
+    "hasPKE": false,
+    "partitions": [],
+    "basenames": {}
+}

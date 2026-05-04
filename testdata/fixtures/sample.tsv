@@ -1,0 +1,10 @@
+1	Alice	a@x.com
+2	Bob	b@x.com
+3	Carol	c@x.com
+4	tab\tafter	d@x.com
+5	nl\nafter	e@x.com
+6	bs\\after	f@x.com
+7	nul\0after	g@x.com
+8	cr\rafter	h@x.com
+9	sub\Zafter	i@x.com
+10	\N	j@x.com
