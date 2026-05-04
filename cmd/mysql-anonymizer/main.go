@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
@@ -54,6 +55,11 @@ func parseFlags(args []string) (opts, error) {
 		return opts{}, errors.New("flag --seed is required")
 	}
 
+	// Check workers
+	if o.Workers <= 0 {
+		return opts{}, fmt.Errorf("-j must be > 0 (got %d)", o.Workers)
+	}
+
 	return o, nil
 }
 
@@ -69,7 +75,7 @@ func main() {
 	o, err := parseFlags(os.Args[1:])
 	if err != nil {
 		os.Stderr.WriteString("Error: " + err.Error() + "\n")
-		os.Exit(1)
+		os.Exit(2)
 	}
 
 	ctx, cancel := signalContext()
