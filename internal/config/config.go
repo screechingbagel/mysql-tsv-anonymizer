@@ -11,8 +11,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the top-level configuration structure mirroring the YAML layout.
-type Config struct {
+// RawConfig is the parsed YAML form, before template compilation.
+type RawConfig struct {
 	Filters map[string]TableConf `yaml:"filters"`
 }
 
@@ -23,54 +23,45 @@ type TableConf struct {
 
 // ColumnConf holds the Go template string for a single column.
 type ColumnConf struct {
-	// Value is a Go text/template string. The function map includes all the
-	// fakerXxx / randAlphaNum / uuidv4 / null helpers.
 	Value string `yaml:"value"`
 }
 
 // CompiledConfig is the ready-to-use form after template compilation.
 type CompiledConfig struct {
 	// Rules: table name → column name → compiled template.
-	// Only tables+columns that appear in the config are present.
 	Rules map[string]map[string]*template.Template
 }
 
-// Load reads the YAML file at path, parses it, and pre-compiles every
-// column template against f's FuncMap. It returns an error if the file is
-// unreadable, the YAML is malformed, or any template fails to parse.
-//
-// The compiled templates close over f, so the templates' randomness flows
-// through f's RNG. If you need per-worker determinism, give each worker its
-// own Faker and its own CompiledConfig.
-func Load(path string, f *faker.Faker) (*CompiledConfig, error) {
+// LoadRaw reads and YAML-parses the config file at path.
+func LoadRaw(path string) (*RawConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
-
-	var raw Config
+	var raw RawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("config: parse YAML: %w", err)
 	}
+	return &raw, nil
+}
 
+// Compile pre-parses every column template against f's FuncMap.
+func (r *RawConfig) Compile(f *faker.Faker) (*CompiledConfig, error) {
 	fm := f.FuncMap()
-
 	cc := &CompiledConfig{
-		Rules: make(map[string]map[string]*template.Template, len(raw.Filters)),
+		Rules: make(map[string]map[string]*template.Template, len(r.Filters)),
 	}
-
-	for table, tf := range raw.Filters {
+	for table, tf := range r.Filters {
 		cols := make(map[string]*template.Template, len(tf.Columns))
 		for col, cf := range tf.Columns {
 			tpl, err := template.New("").Funcs(fm).Parse(cf.Value)
 			if err != nil {
-				return nil, fmt.Errorf("config: compile template for %s.%s (%q): %w",
+				return nil, fmt.Errorf("config: compile %s.%s (%q): %w",
 					table, col, cf.Value, err)
 			}
 			cols[col] = tpl
 		}
 		cc.Rules[table] = cols
 	}
-
 	return cc, nil
 }
