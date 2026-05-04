@@ -12,25 +12,12 @@
 
 ---
 
-## Errata from Task 1 — corrections to spec assumptions (READ FIRST)
+## Errata from Task 1 — still load-bearing for pending tasks
 
-Task 1 ran `mysqlsh` 9.7 against `mysql:8.4` and committed the ground truth under `testdata/fixtures/` plus prose in `testdata/fixtures/notes.md`. The **spec and the original task descriptions below are wrong** in the following ways. Where the original code blocks below conflict with this errata, follow the errata.
+Task 1 ran `mysqlsh` 9.7 against `mysql:8.4` and committed ground truth under `testdata/fixtures/` (prose: `testdata/fixtures/notes.md`). Findings about `.idx` format, `options.columns` JSON path, and the `@<n>` vs `@@<n>` chunk filename split have all been folded into Tasks 10–12 and retired from this list. Two findings still affect remaining tasks:
 
-1. **`.idx` is a single 8-byte big-endian `uint64` of the sibling `.zst` chunk's total decompressed length.** Not per-row offsets, not a sequence. **Task 12** is rewritten in place below to reflect this; ignore the original "8-byte big-endian offsets, one per row" framing wherever it appears in this plan or the spec.
-2. **`compression: "zstd"` lives in the *per-table* JSON, not in `@.json`.** `@.json` has no `compression` field. The strict check belongs against `<schema>@<table>.json`. Affects **Task 10** (`InstanceMeta`/`TableMeta` shapes) and **Task 15** (the `mw("@.json", ...)` test fixture).
-3. **Per-table column list is at JSON path `options.columns`** (an array of strings in physical column order matching TSV cell order). `TableMeta` in Task 10 must use a nested struct, not a top-level `columns` tag.
-4. **Chunk filename convention has two forms:** non-final chunks are `<basename>@<n>.tsv.zst` (single `@`), final chunks are `<basename>@@<n>.tsv.zst` (double `@`). Single-chunk tables get `@@0`. Affects **Task 11** (manifest walker must match both).
-5. **`bytesPerChunk` minimum in mysqlsh is 128k.** Synthetic tests/fixtures that need multi-chunk output must exceed 128k; the integration fixture in **Task 19** can stay synthetic and skip this concern, but a real-mysqlsh fixture cannot use a smaller value.
-
-The body of the plan below has been patched at Tasks 10, 11, 12, and 15 to reflect these findings. Older sessions may still see references to the wrong shape if they read this plan from cache — anything that conflicts with this section is the bug.
-
----
-
-**Plan defect found in Task 11** (FIXED) — the pseudocode for the per-table sidecar classifier:
-```go
-if strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
-```
-incorrectly matches the top-level `@.sql` file, producing a phantom `Tables["@"]` entry. Already fixed in code by adding `case name == "@.sql"` next to the `@.json` case, plus strengthened the `TinyTree` test with `len(m.Tables) == 1`. **The plan still has this bug** — Task 15 (validate.go) iterates `m.Tables` and would crash on the phantom entry, so the plan's pseudocode for Task 11 should be patched if anyone re-executes it. Worth checking whether the analogous bug exists for `@-`-prefixed top-level files in any other task's pseudocode.
+1. **`compression: "zstd"` lives in the *per-table* JSON, not in `@.json`.** `@.json` has no `compression` field. The strict check belongs against `<schema>@<table>.json`. Affects **Task 15** (must validate per-table compression) and **Task 18** (`run` must not reach for `InstanceMeta.Compression` — that field doesn't exist).
+2. **`bytesPerChunk` minimum in mysqlsh is 128k.** A real-mysqlsh fixture cannot use a smaller value. **Task 19**'s synthetic fixture is fine (it bypasses mysqlsh).
 
 ---
 
@@ -60,6 +47,7 @@ cmd/mysql-anonymizer/
   pool.go              # worker pool dispatch
 
 internal/tsv/
+  tsv.go               # package doc
   escape.go            # lifted escape table from hexon/mysqltsv (with LICENSE)
   reader.go            # streaming TSV row reader
   writer.go            # streaming TSV row writer
@@ -68,6 +56,7 @@ internal/tsv/
 
 internal/zstd/
   zstd.go              # klauspost/compress/zstd thin wrapper
+  zstd_test.go
 
 internal/dump/
   meta.go              # @.json + per-table json parsing
@@ -93,522 +82,38 @@ internal/faker/
 testdata/
   fixtures/             # mysqlsh-produced ground-truth artifacts (Task 1)
     notes.md
+    sample.tsv
+    sample.tsv.zst
     sample.idx
     sample-table.json
     sample-at.json
-  tiny-dump/            # synthetic dump for integration test (Task 18)
-  config.yaml           # config used by integration test (Task 18)
 
 docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 ```
 
 ---
 
-## Tasks 1–9: COMPLETED (summary)
+## Tasks 1–12: COMPLETED (summary)
 
-These tasks are done; full content elided to save context. Re-read git/jj history for details.
+Full content elided to save context. Re-read git/jj history for details.
 
-- **Task 1** — mysqlsh fixture committed at `testdata/fixtures/` (sample.tsv, sample.tsv.zst, sample.idx, sample-at.json, sample-table.json, notes.md). Confirmed the errata at the top of this plan: `.idx` is one 8-byte BE uint64; `compression` lives in per-table JSON; columns are at `options.columns`; chunk filenames use `@n` (non-final) vs `@@n` (final).
+- **Task 1** — mysqlsh ground-truth fixture at `testdata/fixtures/` (sample.tsv, sample.tsv.zst, sample.idx, sample-at.json, sample-table.json, notes.md). Pinned the errata above.
 - **Task 2** — `internal/tsv/escape.go` lifted from hexon/mysqltsv with LICENSE attribution.
-- **Task 3** — `internal/tsv/reader.go`: streaming `Reader` with `Next() ([][]byte, error)` reusing internal buffers.
-- **Task 4** — `internal/tsv/writer.go`: streaming `Writer` with `WritePassthrough([]byte)`, `WriteCell([]byte)` (escapes), `EndRow()`, `Flush()`.
-- **Task 5** — `internal/tsv/tsv_test.go`: fuzzed property roundtrip test.
-- **Task 6** — Added `TestRoundtrip_MysqlshFixture` to `internal/tsv/tsv_test.go`. Real mysqlsh `sample.tsv` byte-roundtrips through Reader→WritePassthrough→Writer.
-- **Task 7** — `internal/zstd/{zstd.go,zstd_test.go}`. Thin wrapper exposing `NewReader(io.Reader) (ReadCloser, error)` and `NewWriter(io.Writer) (*kp.Encoder, error)` over `github.com/klauspost/compress/zstd` v1.18.6.
-- **Task 8** — `internal/faker/faker_test.go`. `TestDeterminism_SameSeedSameOutput`, `TestDeterminism_DifferentSeedsDiffer`, `TestInvoice_Format`.
-- **Task 9** — Refactored `internal/config/config.go` from single-phase `Load` to two-phase `LoadRaw(path) (*RawConfig, error)` + `(*RawConfig).Compile(*faker.Faker) (*CompiledConfig, error)`. Types: `RawConfig`, `TableConf`, `ColumnConf`, `CompiledConfig{Rules map[string]map[string]*template.Template}`. text/template parse-time validation catches unknown funcs. Tests in `internal/config/config_test.go`.
+- **Task 3** — `internal/tsv/reader.go`: streaming `Reader.Next() ([][]byte, error)` reusing internal buffers.
+- **Task 4** — `internal/tsv/writer.go`: streaming `Writer` with `WritePassthrough`, `WriteSubstituted`, `WriteNULL`, `EndRow`, `Flush`, `BytesWritten`.
+- **Task 5** — `internal/tsv/tsv_test.go`: fuzzed property roundtrip.
+- **Task 6** — `TestRoundtrip_MysqlshFixture`: real mysqlsh `sample.tsv` byte-roundtrips through Reader→WritePassthrough→Writer.
+- **Task 7** — `internal/zstd/{zstd.go,zstd_test.go}`: thin wrapper over `github.com/klauspost/compress/zstd` v1.18.6.
+- **Task 8** — `internal/faker/faker_test.go`: determinism + invoice format.
+- **Task 9** — `internal/config`: two-phase `LoadRaw` → `(*RawConfig).Compile(*faker.Faker) (*CompiledConfig, error)`. `CompiledConfig{Rules map[string]map[string]*template.Template}`. Parse-time validation catches unknown funcs.
+- **Task 10** — `internal/dump/meta.go`: `ReadInstanceMeta` (Version, Dumper) and `ReadTableMeta` (Compression top-level, Options.Columns, etc.). Tests use Task-1 fixture.
+- **Task 11** — `internal/dump/manifest.go`: non-recursive `WalkManifest` populating `HasDoneMarker`, `InstanceMetaPath`, `Tables[<schema>@<table>]` (each with `MetaPath`, `SQLPath`, sorted `Chunks`), `PassthroughFiles`. Chunk regex `^(.+?)(@@|@)(\d+)\.tsv\.zst$` discriminates final via `@@`. `@.sql` is handled as an explicit case so it doesn't get classified as a phantom `Tables["@"]`.
+- **Task 12** — `internal/idx/idx.go`: `Write(io.Writer, decompressedLen int64)` emits one 8-byte BE uint64. Tests round-trip Task-1's `sample.idx`.
 
-`go test ./...` passes across config, faker, tsv, zstd as of end of Task 9.
-
----
-
-## Task 10: Dump metadata loader (`internal/dump/meta.go`)
-
-**Goal:** Parse the dump's `@.json` and per-table `<schema>@<table>.json` using the structures confirmed in Task 1. **Per-Task-1 fixture (`testdata/fixtures/notes.md`):** `@.json` has no `compression` field; `compression` is top-level in the per-table JSON. Per-table `columns` array is at `options.columns`. The struct shapes below reflect this. `InstanceMeta` is reduced to format-discriminator fields (`version`); `TableMeta` carries `Compression` and `Columns`.
-
-**Files:**
-- Create: `internal/dump/meta.go`
-- Create: `internal/dump/dump_test.go`
-
-- [ ] **Step 1: Write the failing tests.** Create `internal/dump/dump_test.go`:
-
-  ```go
-  package dump
-
-  import (
-      "path/filepath"
-      "strings"
-      "testing"
-  )
-
-  func TestReadInstanceMeta_Fixture(t *testing.T) {
-      meta, err := ReadInstanceMeta("../../testdata/fixtures/sample-at.json")
-      if err != nil {
-          t.Fatal(err)
-      }
-      // @.json has no compression key; we only assert the version discriminator.
-      if !strings.HasPrefix(meta.Version, "2.") {
-          t.Errorf("Version = %q, want 2.x", meta.Version)
-      }
-  }
-
-  func TestReadTableMeta_Fixture(t *testing.T) {
-      meta, err := ReadTableMeta("../../testdata/fixtures/sample-table.json")
-      if err != nil {
-          t.Fatal(err)
-      }
-      if meta.Compression != "zstd" {
-          t.Errorf("Compression = %q, want zstd", meta.Compression)
-      }
-      // Task-1 fixture is a 3-column table (id, name, email).
-      cols := meta.Options.Columns
-      want := []string{"id", "name", "email"}
-      if len(cols) != len(want) {
-          t.Fatalf("len(Options.Columns) = %d, want %d (%v)", len(cols), len(want), cols)
-      }
-      for i := range want {
-          if cols[i] != want[i] {
-              t.Errorf("Options.Columns[%d] = %q, want %q", i, cols[i], want[i])
-          }
-      }
-  }
-
-  func TestReadTableMeta_NotFound(t *testing.T) {
-      _, err := ReadTableMeta(filepath.Join(t.TempDir(), "nope.json"))
-      if err == nil {
-          t.Errorf("expected error reading nonexistent file")
-      }
-  }
-  ```
-
-- [ ] **Step 2: Run, expect compilation failure.**
-
-- [ ] **Step 3: Implement `internal/dump/meta.go`.** The struct field tags must match what the Task-1 notes confirmed; the example below assumes the conventional shape:
-
-  ```go
-  package dump
-
-  import (
-      "encoding/json"
-      "fmt"
-      "os"
-  )
-
-  // InstanceMeta is the subset of @.json that the anonymizer cares about.
-  // mysqlsh's @.json has no `compression` field — that lives in the per-table
-  // JSON. We use Version as a format-discriminator (must start with "2.").
-  // See testdata/fixtures/notes.md for the full mysqlsh schema.
-  type InstanceMeta struct {
-      Version string `json:"version"`
-      Dumper  string `json:"dumper"`
-  }
-
-  func ReadInstanceMeta(path string) (*InstanceMeta, error) {
-      data, err := os.ReadFile(path)
-      if err != nil {
-          return nil, fmt.Errorf("dump: read %s: %w", path, err)
-      }
-      var m InstanceMeta
-      if err := json.Unmarshal(data, &m); err != nil {
-          return nil, fmt.Errorf("dump: parse %s: %w", path, err)
-      }
-      return &m, nil
-  }
-
-  // TableMeta is the per-table sidecar JSON, restricted to the fields the
-  // anonymizer needs. Columns are at JSON path options.columns, in physical
-  // column order matching the TSV cell order. Compression is top-level.
-  type TableMeta struct {
-      Compression string `json:"compression"`
-      Extension   string `json:"extension"`
-      Options     struct {
-          Columns            []string `json:"columns"`
-          FieldsTerminatedBy string   `json:"fieldsTerminatedBy"`
-          FieldsEscapedBy    string   `json:"fieldsEscapedBy"`
-          LinesTerminatedBy  string   `json:"linesTerminatedBy"`
-      } `json:"options"`
-  }
-
-  // Note: callers reach columns via meta.Options.Columns (no helper getter).
-
-  func ReadTableMeta(path string) (*TableMeta, error) {
-      data, err := os.ReadFile(path)
-      if err != nil {
-          return nil, fmt.Errorf("dump: read %s: %w", path, err)
-      }
-      var m TableMeta
-      if err := json.Unmarshal(data, &m); err != nil {
-          return nil, fmt.Errorf("dump: parse %s: %w", path, err)
-      }
-      return &m, nil
-  }
-  ```
-
-- [ ] **Step 4: Run tests.** If they fail because the field name differs from `columns`/`compression`, edit the struct tags per Task-1 notes and rerun.
-
-- [ ] **Step 5: Commit.**
-  ```bash
-  go fmt ./...
-  go vet ./...
-  jj describe -m "feat(dump): metadata parsers for @.json and table json"
-  jj new
-  ```
+`go test ./...` passes across config, dump, faker, idx, tsv, zstd as of end of Task 12.
 
 ---
 
-## Task 11: Manifest walker (`internal/dump/manifest.go`)
-
-**Goal:** Walk a dump directory, classify every file, and present it as a `Manifest` keyed for the orchestrator's needs (per-table chunk lists, top-level files, etc.). Walk order is **lexicographic** for determinism.
-
-**Per-Task-1 fixture:** chunk filenames have **two forms** — non-final chunks are `<schema>@<table>@<n>.tsv.zst` (single `@` separator) and final chunks are `<schema>@<table>@@<n>.tsv.zst` (double `@@`). A single-chunk table has just `@@0`. The walker matches both; downstream code may use the `@@` form to recognize the final chunk if needed.
-
-**Files:**
-- Create: `internal/dump/manifest.go`
-- Modify: `internal/dump/dump_test.go`
-
-- [ ] **Step 1: Write the failing tests.** Append to `dump_test.go`:
-
-  ```go
-  func TestWalkManifest_TinyTree(t *testing.T) {
-      dir := t.TempDir()
-      mustWrite := func(rel string, body string) {
-          t.Helper()
-          p := filepath.Join(dir, rel)
-          if err := os.WriteFile(p, []byte(body), 0644); err != nil {
-              t.Fatal(err)
-          }
-      }
-      // Top-level
-      mustWrite("@.done.json", "{}")
-      mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
-      mustWrite("@.sql", "")
-      // Schema
-      mustWrite("fx.json", "{}")
-      mustWrite("fx.sql", "")
-      // Table — exercises BOTH chunk filename forms: single-@ for non-final,
-      // double-@@ for the final chunk (per testdata/fixtures/notes.md).
-      mustWrite("fx@t.json", `{"options":{"columns":["id","email"]}}`)
-      mustWrite("fx@t.sql", "")
-      mustWrite("fx@t@0.tsv.zst", "")     // non-final chunk: single @
-      mustWrite("fx@t@0.tsv.zst.idx", "")
-      mustWrite("fx@t@@1.tsv.zst", "")    // final chunk: double @@
-      mustWrite("fx@t@@1.tsv.zst.idx", "")
-
-      m, err := WalkManifest(dir)
-      if err != nil {
-          t.Fatal(err)
-      }
-      if !m.HasDoneMarker {
-          t.Errorf("HasDoneMarker = false, want true")
-      }
-      if m.InstanceMetaPath == "" || filepath.Base(m.InstanceMetaPath) != "@.json" {
-          t.Errorf("InstanceMetaPath = %q", m.InstanceMetaPath)
-      }
-      tbl, ok := m.Tables["fx@t"]
-      if !ok {
-          t.Fatalf("table fx@t missing")
-      }
-      if len(tbl.Chunks) != 2 {
-          t.Errorf("len(Chunks) = %d, want 2", len(tbl.Chunks))
-      }
-      if tbl.Chunks[0].DataPath == "" || tbl.Chunks[0].IdxPath == "" {
-          t.Errorf("chunk paths missing: %+v", tbl.Chunks[0])
-      }
-      // Verify lexicographic ordering of chunks.
-      if tbl.Chunks[0].Index != 0 || tbl.Chunks[1].Index != 1 {
-          t.Errorf("chunk indices not in order: %+v", tbl.Chunks)
-      }
-      // Verify final-chunk discrimination (single @ vs double @@).
-      if tbl.Chunks[0].Final {
-          t.Errorf("Chunks[0] (single-@) reported as final")
-      }
-      if !tbl.Chunks[1].Final {
-          t.Errorf("Chunks[1] (double-@@) reported as non-final")
-      }
-  }
-
-  func TestWalkManifest_MissingDoneMarker(t *testing.T) {
-      dir := t.TempDir()
-      if err := os.WriteFile(filepath.Join(dir, "@.json"), []byte("{}"), 0644); err != nil {
-          t.Fatal(err)
-      }
-      m, err := WalkManifest(dir)
-      if err != nil {
-          t.Fatal(err)
-      }
-      if m.HasDoneMarker {
-          t.Errorf("HasDoneMarker = true, want false")
-      }
-  }
-  ```
-
-- [ ] **Step 2: Run, expect compilation failure.**
-
-- [ ] **Step 3: Implement.** Create `internal/dump/manifest.go`:
-
-  ```go
-  package dump
-
-  import (
-      "fmt"
-      "os"
-      "path/filepath"
-      "regexp"
-      "sort"
-      "strconv"
-      "strings"
-  )
-
-  // Manifest classifies every file in a mysqlsh dump directory.
-  type Manifest struct {
-      Root             string
-      HasDoneMarker    bool   // @.done.json present
-      InstanceMetaPath string // path to @.json
-      Tables           map[string]*TableEntry // key: "<schema>@<table>"
-      // PassthroughFiles are all files that the copy pass should hardlink/copy
-      // verbatim into --out. Excludes: chunks of configured tables (set by the
-      // orchestrator after intersecting with config), .idx sidecars of
-      // configured-table chunks, and @.done.json (handled in finalization).
-      PassthroughFiles []string
-  }
-
-  type TableEntry struct {
-      // MetaPath is the per-table .json sidecar path.
-      MetaPath string
-      // SQLPath is the per-table .sql DDL path (may be "" if absent).
-      SQLPath string
-      // Chunks in lexicographic-by-index order.
-      Chunks []ChunkEntry
-  }
-
-  type ChunkEntry struct {
-      Index    int
-      DataPath string // <chunk>.tsv.zst
-      IdxPath  string // <chunk>.tsv.zst.idx
-      Final    bool   // true if filename used the @@ separator (last chunk).
-  }
-
-  // Two filename forms (per testdata/fixtures/notes.md):
-  //   <basename>@<n>.tsv.zst   — non-final chunks
-  //   <basename>@@<n>.tsv.zst  — final chunks (single-chunk tables get @@0)
-  // The non-greedy `.+?` ensures the engine prefers the shortest basename, so
-  // the @@ alternative wins when present even though both could match.
-  var chunkRE = regexp.MustCompile(`^(.+?)(@@|@)(\d+)\.tsv\.zst$`)
-
-  // WalkManifest scans dir non-recursively (mysqlsh dumpInstance produces a
-  // flat directory) using os.ReadDir, which returns entries lexicographically
-  // sorted on all Go-supported platforms — relied on for determinism.
-  func WalkManifest(dir string) (*Manifest, error) {
-      entries, err := os.ReadDir(dir)
-      if err != nil {
-          return nil, fmt.Errorf("dump: read dir %s: %w", dir, err)
-      }
-      m := &Manifest{
-          Root:   dir,
-          Tables: make(map[string]*TableEntry),
-      }
-      // First pass: identify chunks and table sidecars; collect passthrough.
-      for _, e := range entries {
-          if e.IsDir() {
-              continue // mysqlsh dumpInstance is flat; ignore nested dirs.
-          }
-          name := e.Name()
-          full := filepath.Join(dir, name)
-
-          switch {
-          case name == "@.done.json":
-              m.HasDoneMarker = true
-              // Excluded from passthrough; finalization copies it last.
-              continue
-          case name == "@.json":
-              m.InstanceMetaPath = full
-              m.PassthroughFiles = append(m.PassthroughFiles, full)
-              continue
-          }
-
-          // Chunk?
-          if mm := chunkRE.FindStringSubmatch(name); mm != nil {
-              tableKey := mm[1]
-              sep := mm[2]
-              idx, err := strconv.Atoi(mm[3])
-              if err != nil {
-                  return nil, fmt.Errorf("dump: bad chunk index in %s: %w", name, err)
-              }
-              te := m.tableEntry(tableKey)
-              te.Chunks = append(te.Chunks, ChunkEntry{
-                  Index:    idx,
-                  DataPath: full,
-                  IdxPath:  full + ".idx",
-                  Final:    sep == "@@",
-              })
-              continue
-          }
-          // .idx sidecar — handled alongside its chunk above; no passthrough entry.
-          if strings.HasSuffix(name, ".tsv.zst.idx") {
-              continue
-          }
-          // Per-table sidecars: <schema>@<table>.{json,sql}
-          if strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
-              tableKey := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".sql")
-              te := m.tableEntry(tableKey)
-              if strings.HasSuffix(name, ".json") {
-                  te.MetaPath = full
-              } else {
-                  te.SQLPath = full
-              }
-              m.PassthroughFiles = append(m.PassthroughFiles, full)
-              continue
-          }
-          // Anything else (top-level, schema-level): passthrough.
-          m.PassthroughFiles = append(m.PassthroughFiles, full)
-      }
-      // Sort chunks per table by Index for determinism.
-      for _, t := range m.Tables {
-          sort.Slice(t.Chunks, func(i, j int) bool {
-              return t.Chunks[i].Index < t.Chunks[j].Index
-          })
-      }
-      return m, nil
-  }
-
-  func (m *Manifest) tableEntry(key string) *TableEntry {
-      if e, ok := m.Tables[key]; ok {
-          return e
-      }
-      e := &TableEntry{}
-      m.Tables[key] = e
-      return e
-  }
-  ```
-
-  Note: the chunk regex matches both `<schema>@<table>@<n>.tsv.zst` (non-final) and `<schema>@<table>@@<n>.tsv.zst` (final). The non-greedy `.+?` makes the engine try `@@` before `@`, so a final chunk like `fx@t@@0.tsv.zst` captures basename `fx@t`, separator `@@`, index `0`.
-
-- [ ] **Step 4: Run tests.**
-  ```bash
-  go test ./internal/dump/ -v
-  ```
-  Expected: PASS.
-
-- [ ] **Step 5: Commit.**
-  ```bash
-  go fmt ./...
-  go vet ./...
-  jj describe -m "feat(dump): manifest walker classifies dump-dir contents"
-  jj new
-  ```
-
----
-
-## Task 12: `.idx` regenerator (`internal/idx`)
-
-**Goal:** Write a `.idx` sidecar matching the format confirmed in Task 1: **a single 8-byte big-endian `uint64` carrying the total decompressed length of the sibling `.zst` chunk.** Not per-row offsets. Not a sequence. Just one record per chunk.
-
-The Writer API therefore exposes a single "set the decompressed length and flush" operation. The caller (the chunk-processing worker in Task 17) tracks the total via `tsv.Writer.BytesWritten()` and hands the final value to `idx.Write` after the chunk is closed.
-
-**Files:**
-- Create: `internal/idx/idx.go`
-- Create: `internal/idx/idx_test.go`
-
-- [ ] **Step 1: Write the failing tests.** Create `internal/idx/idx_test.go`:
-
-  ```go
-  package idx
-
-  import (
-      "bytes"
-      "encoding/binary"
-      "os"
-      "testing"
-  )
-
-  func TestWrite_EncodesTotalLength(t *testing.T) {
-      var buf bytes.Buffer
-      if err := Write(&buf, 183); err != nil {
-          t.Fatal(err)
-      }
-      want := make([]byte, 8)
-      binary.BigEndian.PutUint64(want, 183)
-      if !bytes.Equal(buf.Bytes(), want) {
-          t.Errorf("got %x, want %x", buf.Bytes(), want)
-      }
-  }
-
-  func TestWrite_RoundtripsFixture(t *testing.T) {
-      // The fixture .idx is exactly 8 bytes: a big-endian uint64 of the
-      // decompressed length of sample.tsv.zst. Reading the fixture, decoding
-      // the length, and re-encoding it must produce the same bytes.
-      data, err := os.ReadFile("../../testdata/fixtures/sample.idx")
-      if err != nil {
-          t.Fatal(err)
-      }
-      if len(data) != 8 {
-          t.Fatalf("fixture .idx is %d bytes, want exactly 8 (per Task 1 notes)", len(data))
-      }
-      length := binary.BigEndian.Uint64(data)
-
-      var buf bytes.Buffer
-      if err := Write(&buf, int64(length)); err != nil {
-          t.Fatal(err)
-      }
-      if !bytes.Equal(buf.Bytes(), data) {
-          t.Errorf("re-encoded .idx %x != fixture %x", buf.Bytes(), data)
-      }
-  }
-
-  func TestWrite_RejectsNegative(t *testing.T) {
-      var buf bytes.Buffer
-      if err := Write(&buf, -1); err == nil {
-          t.Error("expected error for negative length")
-      }
-  }
-  ```
-
-- [ ] **Step 2: Run, expect compilation failure.**
-
-- [ ] **Step 3: Implement.** Create `internal/idx/idx.go`:
-
-  ```go
-  // Package idx writes the .idx sidecar that mysqlsh util.loadDump emits
-  // alongside each chunk. The format (verified against
-  // testdata/fixtures/sample.idx in Task 1) is a single 8-byte big-endian
-  // uint64 giving the total decompressed length of the sibling .zst chunk.
-  // It is not a sequence of per-row offsets and supports no random access.
-  package idx
-
-  import (
-      "encoding/binary"
-      "fmt"
-      "io"
-  )
-
-  // Write encodes decompressedLen as an 8-byte big-endian uint64 to w.
-  // Callers compute decompressedLen via tsv.Writer.BytesWritten() after
-  // closing the chunk's TSV stream.
-  func Write(w io.Writer, decompressedLen int64) error {
-      if decompressedLen < 0 {
-          return fmt.Errorf("idx: negative decompressed length %d", decompressedLen)
-      }
-      var buf [8]byte
-      binary.BigEndian.PutUint64(buf[:], uint64(decompressedLen))
-      _, err := w.Write(buf[:])
-      return err
-  }
-  ```
-
-- [ ] **Step 4: Run tests.**
-  ```bash
-  go test ./internal/idx/ -v
-  ```
-
-- [ ] **Step 5: Commit.**
-  ```bash
-  go fmt ./...
-  go vet ./...
-  jj describe -m "feat(idx): write mysqlsh chunk index (decompressed length)"
-  jj new
-  ```
-
----
 
 ## Task 13: Anon row processor (`internal/anon`)
 
@@ -1060,6 +565,11 @@ The Writer API therefore exposes a single "set the decompressed length and flush
           if err != nil {
               return nil, err
           }
+          // Per the Task-1 errata, compression lives in the per-table JSON.
+          // We only support zstd. Bail loudly on anything else.
+          if tm.Compression != "zstd" {
+              return nil, fmt.Errorf("validate: table %q has compression %q; only zstd is supported", matched, tm.Compression)
+          }
           cols := tm.Options.Columns
           colIdx := make(map[string]int, len(cols))
           for i, c := range cols {
@@ -1191,6 +701,38 @@ The Writer API therefore exposes a single "set the decompressed length and flush
       _, err = Validate(rc, m)
       if err == nil || !strings.Contains(err.Error(), "column") {
           t.Errorf("expected missing-column error, got %v", err)
+      }
+  }
+
+  func TestValidate_NonZstdCompression(t *testing.T) {
+      dir := t.TempDir()
+      mw := func(name, body string) {
+          if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+              t.Fatal(err)
+          }
+      }
+      mw("@.done.json", "{}")
+      mw("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
+      mw("fx.json", "{}")
+      mw("fx.sql", "")
+      mw("fx@users.json", `{"compression":"none","extension":"tsv","options":{"columns":["id","email"]}}`)
+      mw("fx@users.sql", "")
+      mw("fx@users@@0.tsv.zst", "")
+
+      m, err := dump.WalkManifest(dir)
+      if err != nil {
+          t.Fatal(err)
+      }
+      rc := mkConfig(t, `
+  filters:
+    users:
+      columns:
+        email:
+          value: "{{ fakerEmail }}"
+  `)
+      _, err = Validate(rc, m)
+      if err == nil || !strings.Contains(err.Error(), "zstd") {
+          t.Errorf("expected non-zstd compression error, got %v", err)
       }
   }
   ```
@@ -1609,16 +1151,13 @@ The Writer API therefore exposes a single "set the decompressed length and flush
           return fmt.Errorf("--in lacks @.done.json (the dump is incomplete)")
       }
 
-      // 2. Verify @.json compression.
+      // 2. Sanity-parse @.json. (Per the Task-1 errata, compression lives in
+      // the per-table JSON, not @.json — that strict check happens in Validate.)
       if manifest.InstanceMetaPath == "" {
           return fmt.Errorf("--in lacks @.json")
       }
-      meta, err := dump.ReadInstanceMeta(manifest.InstanceMetaPath)
-      if err != nil {
+      if _, err := dump.ReadInstanceMeta(manifest.InstanceMetaPath); err != nil {
           return err
-      }
-      if meta.Compression != "zstd" {
-          return fmt.Errorf("only zstd compression is supported (dump uses %q)", meta.Compression)
       }
 
       // 3. Load + bootstrap-validate config.
@@ -1740,13 +1279,15 @@ The Writer API therefore exposes a single "set the decompressed length and flush
               t.Fatal(err)
           }
       }
-      mustWrite("@.json", `{"compression":"zstd"}`)
+      // Shapes match Task-1 ground truth: @.json has no compression;
+      // per-table json has compression top-level + columns at options.columns.
+      mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
       mustWrite("@.sql", "")
       mustWrite("@.post.sql", "")
       mustWrite("@.users.sql", "")
       mustWrite("fx.json", "{}")
       mustWrite("fx.sql", "")
-      mustWrite("fx@users.json", `{"columns":["id","name","email"]}`)
+      mustWrite("fx@users.json", `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email"],"fieldsTerminatedBy":"\t","fieldsEscapedBy":"\\","linesTerminatedBy":"\n"}}`)
       mustWrite("fx@users.sql", "")
 
       writeChunk := func(idx int, rows [][3]string) {
