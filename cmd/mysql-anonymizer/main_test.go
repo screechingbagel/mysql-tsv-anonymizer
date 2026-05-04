@@ -144,6 +144,46 @@ filters:
 	}
 }
 
+func TestPreparePassthrough_SkipsConfiguredChunks(t *testing.T) {
+	inDir := mkTinyDump(t)
+	m, err := dump.WalkManifest(inDir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	outDir := t.TempDir()
+
+	err = PreparePassthrough(m, map[string]struct{}{"fx@users": {}}, outDir)
+	if err != nil {
+		t.Fatalf("PreparePassthrough: %v", err)
+	}
+
+	shouldExist := []string{
+		"fx@users.json",
+		"fx@users.sql",
+		"@.json",
+		"fx.json",
+		"fx.sql",
+	}
+	for _, name := range shouldExist {
+		p := filepath.Join(outDir, name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected %s to exist in outDir, got: %v", name, err)
+		}
+	}
+
+	shouldNotExist := []string{
+		"fx@users@@0.tsv.zst",
+		"fx@users@@0.tsv.zst.idx",
+		"@.done.json",
+	}
+	for _, name := range shouldNotExist {
+		p := filepath.Join(outDir, name)
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("expected %s to NOT exist in outDir, but it does", name)
+		}
+	}
+}
+
 func TestValidate_NonZstdCompression(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
