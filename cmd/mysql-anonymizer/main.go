@@ -1,3 +1,6 @@
+// Command mysql-anonymizer rewrites configured columns of a mysqlsh
+// util.dumpInstance directory and emits a sibling clean directory.
+// See docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md.
 package main
 
 import (
@@ -30,18 +33,10 @@ func parseFlags(args []string) (opts, error) {
 	fs.IntVar(&o.Workers, "j", runtime.NumCPU(), "worker count")
 
 	if err := fs.Parse(args); err != nil {
-		return opts{}, err
-	}
-
-	// Check required flags
-	if o.InDir == "" {
-		return opts{}, errors.New("flag --in is required")
-	}
-	if o.OutDir == "" {
-		return opts{}, errors.New("flag --out is required")
-	}
-	if o.ConfigPath == "" {
-		return opts{}, errors.New("flag -c is required")
+		if errors.Is(err, flag.ErrHelp) {
+			return o, err // bubble up so main can exit 0
+		}
+		return o, err
 	}
 
 	// Check if seed was explicitly set
@@ -51,15 +46,19 @@ func parseFlags(args []string) (opts, error) {
 			seedSet = true
 		}
 	})
-	if !seedSet {
-		return opts{}, errors.New("flag --seed is required")
-	}
 
-	// Check workers
-	if o.Workers <= 0 {
-		return opts{}, fmt.Errorf("-j must be > 0 (got %d)", o.Workers)
+	switch {
+	case o.InDir == "":
+		return o, errors.New("--in is required")
+	case o.OutDir == "":
+		return o, errors.New("--out is required")
+	case o.ConfigPath == "":
+		return o, errors.New("-c is required")
+	case !seedSet:
+		return o, errors.New("--seed is required (no implicit default)")
+	case o.Workers <= 0:
+		return o, fmt.Errorf("-j must be > 0 (got %d)", o.Workers)
 	}
-
 	return o, nil
 }
 
@@ -68,13 +67,18 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 func run(ctx context.Context, o opts) error {
+	_ = ctx
+	_ = o
 	return errors.New("not implemented")
 }
 
 func main() {
 	o, err := parseFlags(os.Args[1:])
 	if err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
@@ -82,7 +86,7 @@ func main() {
 	defer cancel()
 
 	if err := run(ctx, o); err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

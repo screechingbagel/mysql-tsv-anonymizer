@@ -25,3 +25,13 @@ func TestParseFlags_MissingIn(t *testing.T) {
 		t.Errorf("expected --in required error, got %v", err)
 	}
 }
+
+func TestParseFlags_SeedZeroExplicit(t *testing.T) {
+	o, err := parseFlags([]string{"--in", "x", "--out", "y", "-c", "z", "--seed", "0"})
+	if err != nil {
+		t.Errorf("expected --seed 0 to be accepted, got %v", err)
+	}
+	if o.Seed != 0 {
+		t.Errorf("expected Seed=0, got %d", o.Seed)
+	}
+}
