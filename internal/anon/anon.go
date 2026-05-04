@@ -29,6 +29,7 @@ type RowEnded func(bytesAtRowEnd int64) error
 // decide per-column treatment. It is equivalent to ProcessAllWithRowHook with
 // a nil hook.
 func ProcessAll(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, f *faker.Faker) error {
+	_ = f // reserved: f's funcmap is already closed over by each template
 	return ProcessAllWithRowHook(r, w, slots, f, nil)
 }
 
@@ -37,6 +38,8 @@ func ProcessAll(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, f *fak
 // end of that row. Processing stops on the first error; io.EOF from r is
 // treated as clean termination and returns nil.
 func ProcessAllWithRowHook(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, f *faker.Faker, hook RowEnded) error {
+	_ = f // reserved: f's funcmap is already closed over by each template
+	var sb strings.Builder
 	for {
 		cells, err := r.Next()
 		if err == io.EOF {
@@ -59,7 +62,7 @@ func ProcessAllWithRowHook(r *tsv.Reader, w *tsv.Writer, slots []*template.Templ
 			}
 
 			// Execute template.
-			var sb strings.Builder
+			sb.Reset()
 			if err := slots[i].Execute(&sb, nil); err != nil {
 				return fmt.Errorf("anon: execute template cell %d: %w", i, err)
 			}

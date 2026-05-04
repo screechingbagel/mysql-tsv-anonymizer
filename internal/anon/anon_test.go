@@ -2,7 +2,6 @@ package anon
 
 import (
 	"bytes"
-	"io"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -177,7 +176,7 @@ func TestProcessAll_EOF(t *testing.T) {
 	var buf bytes.Buffer
 	w := tsv.NewWriter(&buf)
 	err := ProcessAll(r, w, []*template.Template{}, newFaker())
-	if err != nil && err != io.EOF {
+	if err != nil {
 		t.Fatalf("unexpected error on empty input: %v", err)
 	}
 }
