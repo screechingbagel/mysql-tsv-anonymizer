@@ -1259,10 +1259,10 @@ Full content elided to save context. Re-read git/jj history for details.
   import (
       "bytes"
       "context"
-      "encoding/json"
       "io"
       "os"
       "path/filepath"
+      "strconv"
       "testing"
 
       lzstd "github.com/screechingbagel/mysql-tsv-anonymizer/internal/zstd"
@@ -1310,7 +1310,7 @@ Full content elided to save context. Re-read git/jj history for details.
           if err := zw.Close(); err != nil {
               t.Fatal(err)
           }
-          chunkPath := filepath.Join(dir, "fx@users@@" + strconvItoa(idx) + ".tsv.zst")
+          chunkPath := filepath.Join(dir, "fx@users@@"+strconv.Itoa(idx)+".tsv.zst")
           if err := os.WriteFile(chunkPath, compressed.Bytes(), 0644); err != nil {
               t.Fatal(err)
           }
@@ -1332,20 +1332,6 @@ Full content elided to save context. Re-read git/jj history for details.
 
       // Done marker — last so a watcher could rely on it.
       mustWrite("@.done.json", "{}")
-  }
-
-  func strconvItoa(i int) string {
-      // tiny replacement to avoid pulling strconv at test fixtures
-      if i == 0 {
-          return "0"
-      }
-      var buf [16]byte
-      pos := len(buf)
-      for n := i; n > 0; n /= 10 {
-          pos--
-          buf[pos] = byte('0' + n%10)
-      }
-      return string(buf[pos:])
   }
 
   func writeConfig(t *testing.T, dir string) string {
@@ -1426,7 +1412,7 @@ Full content elided to save context. Re-read git/jj history for details.
       // 2. Email column is replaced (no more "@x.com").
       // 3. id and name columns are byte-identical.
       verifyChunk := func(idx int, expectedNames []string, expectedIDs []string) {
-          chunkPath := filepath.Join(outDir, "fx@users@@" + strconvItoa(idx) + ".tsv.zst")
+          chunkPath := filepath.Join(outDir, "fx@users@@"+strconv.Itoa(idx)+".tsv.zst")
           f, err := os.Open(chunkPath)
           if err != nil {
               t.Fatal(err)
