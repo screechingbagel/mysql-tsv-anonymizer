@@ -3,6 +3,7 @@ package tsv
 import (
 	"bytes"
 	"io"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -153,4 +154,92 @@ func TestWriter_BytesWritten(t *testing.T) {
 	if got := w.BytesWritten(); got != 5 {
 		t.Errorf("BytesWritten = %d, want 5", got)
 	}
+}
+
+func TestRoundtrip_BytesIdentical(t *testing.T) {
+	input := []byte(
+		`1` + "\t" + `Alice` + "\t" + `a@x.com` + "\n" +
+			`2` + "\t" + `\N` + "\t" + `with\ttab` + "\n" +
+			`3` + "\t" + `with\\backslash` + "\t" + `with\nnewline` + "\n" +
+			`4` + "\t" + `with\0null` + "\t" + `with\Zsub` + "\n",
+	)
+
+	var out bytes.Buffer
+	r := NewReader(bytes.NewReader(input))
+	w := NewWriter(&out)
+	for {
+		cells, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		for _, c := range cells {
+			if err := w.WritePassthrough(c); err != nil {
+				t.Fatalf("WritePassthrough: %v", err)
+			}
+		}
+		if err := w.EndRow(); err != nil {
+			t.Fatalf("EndRow: %v", err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), input) {
+		t.Errorf("roundtrip mismatch\ninput:  %q\noutput: %q", input, out.Bytes())
+	}
+}
+
+func TestRoundtrip_FuzzedCells(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	for trial := range 100 {
+		input := generateRandomTSV(rng, 5+rng.IntN(10), 1+rng.IntN(5))
+		var out bytes.Buffer
+		r := NewReader(bytes.NewReader(input))
+		w := NewWriter(&out)
+		for {
+			cells, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("trial %d: Next: %v", trial, err)
+			}
+			for _, c := range cells {
+				w.WritePassthrough(c)
+			}
+			w.EndRow()
+		}
+		w.Flush()
+		if !bytes.Equal(out.Bytes(), input) {
+			t.Fatalf("trial %d mismatch\ninput:  %q\noutput: %q", trial, input, out.Bytes())
+		}
+	}
+}
+
+// generateRandomTSV produces a syntactically valid mysqlsh-dialect TSV with
+// numRows rows of numCols cells each. Cells contain a random mix of plain
+// bytes and escape sequences.
+func generateRandomTSV(rng *rand.Rand, numRows, numCols int) []byte {
+	var buf bytes.Buffer
+	escapes := []string{`\0`, `\b`, `\n`, `\r`, `\t`, `\Z`, `\\`, `\N`, `\x`}
+	for range numRows {
+		for c := range numCols {
+			if c > 0 {
+				buf.WriteByte('\t')
+			}
+			cellLen := rng.IntN(8)
+			for range cellLen {
+				if rng.IntN(3) == 0 {
+					buf.WriteString(escapes[rng.IntN(len(escapes))])
+				} else {
+					buf.WriteByte(byte('a' + rng.IntN(26)))
+				}
+			}
+		}
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes()
 }
