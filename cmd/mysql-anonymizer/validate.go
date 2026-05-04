@@ -46,12 +46,15 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 		case 1:
 			// exactly one match — proceed below
 		default:
-			return nil, fmt.Errorf("validate: table %q is ambiguous across schemas (%s, %s)",
-				tableKey, matches[0], matches[1])
+			return nil, fmt.Errorf("validate: table %q is ambiguous across schemas: %s", tableKey, strings.Join(matches, ", "))
 		}
 
 		matched := matches[0]
 		te := m.Tables[matched]
+
+		if te.MetaPath == "" {
+			return nil, fmt.Errorf("validate: table %q has no per-table json sidecar", matched)
+		}
 
 		tm, err := dump.ReadTableMeta(te.MetaPath)
 		if err != nil {
@@ -71,7 +74,7 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 
 		for colName := range tf.Columns {
 			if _, ok := colIdx[colName]; !ok {
-				return nil, fmt.Errorf("validate: config references column %s.%s but it is not in the dump (have %v)",
+				return nil, fmt.Errorf("validate: config references column %q.%q but it is not in the dump (have %v)",
 					tableKey, colName, cols)
 			}
 		}

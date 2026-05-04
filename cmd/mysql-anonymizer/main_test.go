@@ -67,17 +67,13 @@ func mkTinyDump(t *testing.T) string {
 // mkConfig writes a temp YAML config file and returns the parsed *RawConfig.
 func mkConfig(t *testing.T, body string) *config.RawConfig {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "config-*.yaml")
-	if err != nil {
-		t.Fatalf("mkConfig: create temp file: %v", err)
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := f.WriteString(body); err != nil {
-		t.Fatalf("mkConfig: write: %v", err)
-	}
-	f.Close()
-	rc, err := config.LoadRaw(f.Name())
+	rc, err := config.LoadRaw(p)
 	if err != nil {
-		t.Fatalf("mkConfig: LoadRaw: %v", err)
+		t.Fatal(err)
 	}
 	return rc
 }
