@@ -184,6 +184,19 @@ func TestPreparePassthrough_SkipsConfiguredChunks(t *testing.T) {
 	}
 }
 
+func TestDeriveSeed_Stable(t *testing.T) {
+	hi1, lo1 := deriveSeed(42, "fx@t", 7)
+	hi2, lo2 := deriveSeed(42, "fx@t", 7)
+	if hi1 != hi2 || lo1 != lo2 {
+		t.Errorf("deriveSeed not deterministic: (%d,%d) vs (%d,%d)", hi1, lo1, hi2, lo2)
+	}
+	// Different inputs should produce different outputs (with overwhelming probability).
+	hi3, lo3 := deriveSeed(42, "fx@t", 8)
+	if hi1 == hi3 && lo1 == lo3 {
+		t.Errorf("seed collision across chunkIdx")
+	}
+}
+
 func TestValidate_NonZstdCompression(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
