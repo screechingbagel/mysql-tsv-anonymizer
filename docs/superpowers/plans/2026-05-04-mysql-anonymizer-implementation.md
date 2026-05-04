@@ -26,6 +26,14 @@ The body of the plan below has been patched at Tasks 10, 11, 12, and 15 to refle
 
 ---
 
+**Plan defect found in Task 11** (FIXED) — the pseudocode for the per-table sidecar classifier:
+```go
+if strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
+```
+incorrectly matches the top-level `@.sql` file, producing a phantom `Tables["@"]` entry. Already fixed in code by adding `case name == "@.sql"` next to the `@.json` case, plus strengthened the `TinyTree` test with `len(m.Tables) == 1`. **The plan still has this bug** — Task 15 (validate.go) iterates `m.Tables` and would crash on the phantom entry, so the plan's pseudocode for Task 11 should be patched if anyone re-executes it. Worth checking whether the analogous bug exists for `@-`-prefixed top-level files in any other task's pseudocode.
+
+---
+
 ## Workflow conventions
 
 - **Commit cadence: at the end of each task.** The "Commit" step at the end of every task is the only place where the working copy is wrapped.
