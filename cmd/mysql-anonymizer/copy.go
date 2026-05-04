@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 // no explicit skip is required here.
 func PreparePassthrough(m *dump.Manifest, configuredTables map[string]struct{}, outDir string) error {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return err
+		return fmt.Errorf("preparePassthrough: create output dir: %w", err)
 	}
 
 	// Build sets of chunk paths belonging to configured tables.
@@ -51,24 +52,29 @@ func PreparePassthrough(m *dump.Manifest, configuredTables map[string]struct{}, 
 // linkOrCopy tries to hardlink src to dst; on any link error it falls back to
 // a regular file copy. This makes the function portable across filesystems and
 // CI environments where cross-device links are disallowed.
-func linkOrCopy(src, dst string) error {
+func linkOrCopy(src, dst string) (retErr error) {
 	if err := os.Link(src, dst); err == nil {
 		return nil
 	}
+	// Fallback: copy.
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("copy: open %s: %w", src, err)
 	}
 	defer in.Close()
 
 	out, err := os.Create(dst)
 	if err != nil {
-		return err
+		return fmt.Errorf("copy: create %s: %w", dst, err)
 	}
-	defer out.Close()
+	defer func() {
+		if cerr := out.Close(); cerr != nil && retErr == nil {
+			retErr = cerr
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
-		return err
+		return fmt.Errorf("copy: %s -> %s: %w", src, dst, err)
 	}
 	return out.Sync()
 }
