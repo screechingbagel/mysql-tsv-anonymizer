@@ -97,9 +97,9 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
   ```bash
   docker run --rm -d --name mysql-fixture \
     -e MYSQL_ROOT_PASSWORD=test -e MYSQL_DATABASE=fx \
-    -p 13306:3306 mysql:8
-  # wait ~10s for startup
-  mysql -h 127.0.0.1 -P 13306 -u root -ptest fx <<'SQL'
+    mysql:8
+  # wait ~5s for startup
+  docker run -i --rm mysql:8 mysql -h mysql-fixture.orb.local -u root -ptest fx <<'SQL'
   CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(64), email VARCHAR(64));
   INSERT INTO t VALUES (1,'Alice','a@x.com'),(2,'Bob','b@x.com'),(3,'Carol','c@x.com');
   SQL
@@ -108,11 +108,11 @@ docs/superpowers/specs/2026-05-03-mysql-anonymizer-design.md  # already written
 - [ ] **Step 2: Dump with `mysqlsh`.**
   ```bash
   rm -rf /tmp/fxdump
-  mysqlsh --uri=root:test@127.0.0.1:13306 -- util dump-instance /tmp/fxdump \
-    --threads=1 --bytesPerChunk=1024
+  mysqlsh --uri=root:test@mysql-fixture.orb.local -- util dump-instance /tmp/fxdump \
+    --threads=1 --bytesPerChunk=128k
   ls /tmp/fxdump
   ```
-  Expected layout (names approximate): `@.done.json`, `@.json`, `@.post.sql`, `@.sql`, `@.users.sql`, `fx.json`, `fx.sql`, `fx@t.json`, `fx@t.sql`, `fx@t@@0.tsv.zst`, `fx@t@@0.tsv.zst.idx`.
+  Expected layout: `@.done.json`, `@.json`, `@.post.sql`, `@.sql`, `@.users.sql`, `fx.json`, `fx.sql`, `fx@t.json`, `fx@t.sql`, `fx@t@@0.tsv.zst`, `fx@t@@0.tsv.zst.idx`.
 
 - [ ] **Step 3: Decompress one chunk for inspection.**
   ```bash
