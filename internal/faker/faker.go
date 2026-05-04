@@ -17,7 +17,7 @@ import (
 
 // SentinelNULL is the sentinel string that template output may emit to signal
 // "this cell should be encoded as a SQL NULL." anon.Apply translates it.
-const SentinelNULL = "::NULL::"
+const SentinelNULL = "\x00\x00mysql-anonymizer-NULL\x00\x00"
 
 // Faker is a per-worker fake-data generator. Construct one per worker with New
 // and reuse it for the lifetime of that worker; do not share across goroutines
