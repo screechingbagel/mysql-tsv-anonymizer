@@ -8,10 +8,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
+
+	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/config"
+	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/dump"
+	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/faker"
 )
 
 type opts struct {
@@ -67,9 +73,74 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 func run(ctx context.Context, o opts) error {
-	_ = ctx
-	_ = o
-	return errors.New("not implemented")
+	// 1. Manifest.
+	manifest, err := dump.WalkManifest(o.InDir)
+	if err != nil {
+		return err
+	}
+	if !manifest.HasDoneMarker {
+		return fmt.Errorf("--in lacks @.done.json (the dump is incomplete)")
+	}
+
+	// 2. Sanity-parse @.json.
+	if manifest.InstanceMetaPath == "" {
+		return fmt.Errorf("--in lacks @.json")
+	}
+	if _, err := dump.ReadInstanceMeta(manifest.InstanceMetaPath); err != nil {
+		return err
+	}
+
+	// 3. Load + bootstrap-validate config.
+	rc, err := config.LoadRaw(o.ConfigPath)
+	if err != nil {
+		return err
+	}
+	bootF := faker.New(rand.NewPCG(0xdeadbeef, 0xcafebabe))
+	if _, err := rc.Compile(bootF); err != nil {
+		return err
+	}
+
+	// 4. Strict validate.
+	schemas, err := Validate(rc, manifest)
+	if err != nil {
+		return err
+	}
+
+	// 5. --out must not exist or be empty.
+	if entries, err := os.ReadDir(o.OutDir); err == nil {
+		if len(entries) > 0 {
+			return fmt.Errorf("--out exists and is non-empty: %s", o.OutDir)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	// 6. Copy pass.
+	configured := make(map[string]struct{}, len(schemas))
+	for k := range schemas {
+		configured[k] = struct{}{}
+	}
+	if err := PreparePassthrough(manifest, configured, o.OutDir); err != nil {
+		return err
+	}
+
+	// 7. Build job list.
+	var jobs []job
+	for k := range schemas {
+		for _, c := range manifest.Tables[k].Chunks {
+			jobs = append(jobs, job{tableKey: k, schema: schemas[k], chunk: c})
+		}
+	}
+
+	// 8. Run pool.
+	if err := RunPool(ctx, jobs, rc, schemas, o.Seed, o.OutDir, o.Workers); err != nil {
+		return err
+	}
+
+	// 9. Finalize: copy @.done.json LAST.
+	// @.done.json is NOT in manifest.PassthroughFiles — WalkManifest sets
+	// HasDoneMarker and skips it. Use manifest.Root directly.
+	return linkOrCopy(filepath.Join(manifest.Root, "@.done.json"), filepath.Join(o.OutDir, "@.done.json"))
 }
 
 func main() {
