@@ -2,6 +2,7 @@ package tsv
 
 import (
 	"bytes"
+	"io"
 	"testing"
 )
 
@@ -28,4 +29,70 @@ func TestEscapeInto(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReader_BasicRows(t *testing.T) {
+	input := []byte("1\tAlice\ta@x.com\n2\tBob\tb@x.com\n")
+	r := NewReader(bytes.NewReader(input))
+
+	row1, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next #1: %v", err)
+	}
+	want1 := [][]byte{[]byte("1"), []byte("Alice"), []byte("a@x.com")}
+	if !equalRows(row1, want1) {
+		t.Errorf("row1 = %q, want %q", row1, want1)
+	}
+
+	row2, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next #2: %v", err)
+	}
+	want2 := [][]byte{[]byte("2"), []byte("Bob"), []byte("b@x.com")}
+	if !equalRows(row2, want2) {
+		t.Errorf("row2 = %q, want %q", row2, want2)
+	}
+
+	_, err = r.Next()
+	if err != io.EOF {
+		t.Errorf("expected EOF, got %v", err)
+	}
+}
+
+func TestReader_PreservesEscapes(t *testing.T) {
+	input := []byte(`val\tone` + "\t" + `val\\two` + "\n")
+	r := NewReader(bytes.NewReader(input))
+	row, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	want := [][]byte{[]byte(`val\tone`), []byte(`val\\two`)}
+	if !equalRows(row, want) {
+		t.Errorf("row = %q, want %q", row, want)
+	}
+}
+
+func TestReader_NullToken(t *testing.T) {
+	input := []byte(`Alice` + "\t" + `\N` + "\t" + `a@x.com` + "\n")
+	r := NewReader(bytes.NewReader(input))
+	row, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	want := [][]byte{[]byte("Alice"), []byte(`\N`), []byte("a@x.com")}
+	if !equalRows(row, want) {
+		t.Errorf("row = %q, want %q", row, want)
+	}
+}
+
+func equalRows(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !bytes.Equal(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
