@@ -19,6 +19,14 @@ Task 1 ran `mysqlsh` 9.7 against `mysql:8.4` and committed ground truth under `t
 1. **`compression: "zstd"` lives in the *per-table* JSON, not in `@.json`.** `@.json` has no `compression` field. The strict check belongs against `<schema>@<table>.json`. Affects **Task 15** (must validate per-table compression) and **Task 18** (`run` must not reach for `InstanceMeta.Compression` — that field doesn't exist).
 2. **`bytesPerChunk` minimum in mysqlsh is 128k.** A real-mysqlsh fixture cannot use a smaller value. **Task 19**'s synthetic fixture is fine (it bypasses mysqlsh).
 
+## Errata from Tasks 13–16 — load-bearing for Tasks 17–20
+
+3. **`config.TableFilter` does not exist — the type is `config.TableConf`.** `RawConfig.Filters` is `map[string]TableConf`; each `TableConf` has `Columns map[string]ColumnConf`. Use these names when referencing config types by name in Tasks 17–20.
+4. **`@.done.json` is NOT in `manifest.PassthroughFiles`.** `WalkManifest` sets `HasDoneMarker = true` and `continue`s without appending to `PassthroughFiles`. The Task 18 scan loop in the plan is dead code and must not be written. Use `manifest.Root` directly (it is a confirmed `string` field on `Manifest`). The finalization in Task 18 should be:
+   ```go
+   return linkOrCopy(filepath.Join(manifest.Root, "@.done.json"), filepath.Join(o.OutDir, "@.done.json"))
+   ```
+
 ---
 
 ## Workflow conventions
@@ -1208,19 +1216,9 @@ Full content elided to save context. Re-read git/jj history for details.
       }
 
       // 9. Finalize: copy @.done.json LAST.
-      donePath := ""
-      for _, p := range manifest.PassthroughFiles {
-          if filepath.Base(p) == "@.done.json" {
-              donePath = p
-              break
-          }
-      }
-      // If somehow @.done.json wasn't in passthrough (it's excluded by design),
-      // re-construct its source path from manifest.Root.
-      if donePath == "" {
-          donePath = filepath.Join(manifest.Root, "@.done.json")
-      }
-      return linkOrCopy(donePath, filepath.Join(o.OutDir, "@.done.json"))
+      // @.done.json is NOT in manifest.PassthroughFiles — WalkManifest sets
+      // HasDoneMarker and skips it. Use manifest.Root directly.
+      return linkOrCopy(filepath.Join(manifest.Root, "@.done.json"), filepath.Join(o.OutDir, "@.done.json"))
   }
   ```
 
