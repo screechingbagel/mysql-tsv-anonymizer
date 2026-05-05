@@ -8,11 +8,10 @@ import (
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/dump"
 )
 
-// tableSchema holds the ordered column list and a fast name→index lookup for
-// one table, as derived from the per-table sidecar JSON in the dump.
+// tableSchema holds the ordered column list for one table, as derived from
+// the per-table sidecar JSON in the dump.
 type tableSchema struct {
-	Columns  []string
-	ColIndex map[string]int
+	Columns []string
 }
 
 // tablePart returns the table name portion of a manifest key of the form
@@ -79,19 +78,18 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 		}
 
 		cols := tm.Options.Columns
-		colIdx := make(map[string]int, len(cols))
-		for i, c := range cols {
-			colIdx[c] = i
+		colSet := make(map[string]struct{}, len(cols))
+		for _, c := range cols {
+			colSet[c] = struct{}{}
 		}
 		for colName := range tf.Columns {
-			if _, ok := colIdx[colName]; !ok {
+			if _, ok := colSet[colName]; !ok {
 				return nil, fmt.Errorf("validate: config references column %q.%q but it is not in the dump (have %v)",
 					tableKey, colName, cols)
 			}
 		}
 		schemas[matched] = &tableSchema{
-			Columns:  cols,
-			ColIndex: colIdx,
+			Columns: cols,
 		}
 	}
 	return schemas, nil
