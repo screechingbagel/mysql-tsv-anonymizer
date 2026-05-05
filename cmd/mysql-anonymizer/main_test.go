@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,5 +232,28 @@ filters:
 	}
 	if !strings.Contains(err.Error(), "zstd") {
 		t.Errorf("expected error to contain \"zstd\", got: %v", err)
+	}
+}
+
+func TestRun_RejectsVersion3(t *testing.T) {
+	dir := mkTinyDump(t)
+	// Overwrite @.json with a 3.x version.
+	if err := os.WriteFile(filepath.Join(dir, "@.json"),
+		[]byte(`{"version":"3.0.0","dumper":"synthetic"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`filters: {}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	o := opts{InDir: dir, OutDir: outDir, ConfigPath: cfgPath, Seed: 1, Workers: 1}
+	err := run(context.Background(), o)
+	if err == nil {
+		t.Fatal("expected version error, got nil")
+	}
+	if !strings.Contains(err.Error(), "3.0.0") || !strings.Contains(err.Error(), "version") {
+		t.Errorf("expected error mentioning version 3.0.0, got: %v", err)
 	}
 }

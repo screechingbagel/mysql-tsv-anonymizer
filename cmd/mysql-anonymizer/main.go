@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/config"
@@ -86,8 +87,12 @@ func run(ctx context.Context, o opts) error {
 	if manifest.InstanceMetaPath == "" {
 		return fmt.Errorf("--in lacks @.json")
 	}
-	if _, err := dump.ReadInstanceMeta(manifest.InstanceMetaPath); err != nil {
+	instMeta, err := dump.ReadInstanceMeta(manifest.InstanceMetaPath)
+	if err != nil {
 		return err
+	}
+	if !strings.HasPrefix(instMeta.Version, "2.") {
+		return fmt.Errorf("dump version %q is not supported (only 2.x is supported)", instMeta.Version)
 	}
 
 	// 3. Load + bootstrap-validate config.
