@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -93,4 +94,127 @@ filters:
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestEndToEnd(t *testing.T) {
+	inDir := t.TempDir()
+	buildTinyDump(t, inDir)
+	cfg := writeConfig(t, t.TempDir())
+	outDir := filepath.Join(t.TempDir(), "clean")
+
+	o := opts{
+		InDir:      inDir,
+		OutDir:     outDir,
+		ConfigPath: cfg,
+		Seed:       42,
+		Workers:    2,
+	}
+	if err := run(context.Background(), o); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// 1. Output dir mirrors input.
+	inEntries, err := os.ReadDir(inDir)
+	if err != nil {
+		t.Fatalf("ReadDir inDir: %v", err)
+	}
+	outEntries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("ReadDir outDir: %v", err)
+	}
+	inNames := map[string]bool{}
+	for _, e := range inEntries {
+		inNames[e.Name()] = true
+	}
+	for _, e := range outEntries {
+		if !inNames[e.Name()] {
+			t.Errorf("unexpected output file: %s", e.Name())
+		}
+	}
+	for n := range inNames {
+		if _, err := os.Stat(filepath.Join(outDir, n)); err != nil {
+			t.Errorf("missing in output: %s (%v)", n, err)
+		}
+	}
+
+	// 2. Email column is replaced (no more "@x.com").
+	// 3. id and name columns are byte-identical.
+	verifyChunk := func(idx int, expectedNames []string, expectedIDs []string) {
+		chunkPath := filepath.Join(outDir, "fx@users@@"+strconv.Itoa(idx)+".tsv.zst")
+		f, err := os.Open(chunkPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		zr, err := lzstd.NewReader(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer zr.Close()
+		data, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+		if len(rows) != len(expectedNames) {
+			t.Fatalf("chunk %d: %d rows, expected %d", idx, len(rows), len(expectedNames))
+		}
+		for i, row := range rows {
+			cells := bytes.Split(row, []byte{'\t'})
+			if len(cells) != 3 {
+				t.Errorf("chunk %d row %d: %d cells, want 3", idx, i, len(cells))
+				continue
+			}
+			if string(cells[0]) != expectedIDs[i] {
+				t.Errorf("chunk %d row %d id = %q, want %q", idx, i, cells[0], expectedIDs[i])
+			}
+			if string(cells[1]) != expectedNames[i] {
+				t.Errorf("chunk %d row %d name = %q, want %q", idx, i, cells[1], expectedNames[i])
+			}
+			if bytes.Contains(cells[2], []byte("@x.com")) {
+				t.Errorf("chunk %d row %d email %q still contains @x.com", idx, i, cells[2])
+			}
+			if !bytes.Contains(cells[2], []byte{'@'}) {
+				t.Errorf("chunk %d row %d email %q has no @", idx, i, cells[2])
+			}
+		}
+	}
+	verifyChunk(0, []string{"Alice", "Bob", "Carol"}, []string{"1", "2", "3"})
+	verifyChunk(1, []string{"Dave", "Eve", "Frank"}, []string{"4", "5", "6"})
+}
+
+func TestEndToEnd_Determinism(t *testing.T) {
+	inDir := t.TempDir()
+	buildTinyDump(t, inDir)
+	cfg := writeConfig(t, t.TempDir())
+
+	run1Out := filepath.Join(t.TempDir(), "clean1")
+	run2Out := filepath.Join(t.TempDir(), "clean2")
+	o1 := opts{InDir: inDir, OutDir: run1Out, ConfigPath: cfg, Seed: 42, Workers: 2}
+	o2 := opts{InDir: inDir, OutDir: run2Out, ConfigPath: cfg, Seed: 42, Workers: 2}
+	if err := run(context.Background(), o1); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), o2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Diff every file byte-for-byte.
+	entries, err := os.ReadDir(run1Out)
+	if err != nil {
+		t.Fatalf("ReadDir run1Out: %v", err)
+	}
+	for _, e := range entries {
+		a, err := os.ReadFile(filepath.Join(run1Out, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(run2Out, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a, b) {
+			t.Errorf("nondeterminism: %s differs between runs (lens %d/%d)", e.Name(), len(a), len(b))
+		}
+	}
 }
