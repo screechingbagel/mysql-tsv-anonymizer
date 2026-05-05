@@ -16,7 +16,13 @@ import (
 )
 
 // buildTinyDump writes a synthetic mysqlsh-shaped dump under dir.
-// One schema "fx", one table "users" with two chunks of 3 rows each.
+// One schema "fx", one table "users" with two chunks:
+//   - chunk 0 has the non-final @<n> filename pattern
+//   - chunk 1 has the final @@<n> pattern (the last chunk of a table)
+//
+// Columns are id, name, email, notes. Notes contains every TSV escape
+// character plus a literal NULL (\N) cell — so the byte-identity contract
+// gets exercised for passthrough cells with non-trivial bytes.
 func buildTinyDump(t *testing.T, dir string) {
 	t.Helper()
 	mustWrite := func(rel, body string) {
@@ -24,18 +30,19 @@ func buildTinyDump(t *testing.T, dir string) {
 			t.Fatal(err)
 		}
 	}
-	// Shapes match Task-1 ground truth: @.json has no compression;
-	// per-table json has compression top-level + columns at options.columns.
 	mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
 	mustWrite("@.sql", "")
 	mustWrite("@.post.sql", "")
 	mustWrite("@.users.sql", "")
 	mustWrite("fx.json", "{}")
 	mustWrite("fx.sql", "")
-	mustWrite("fx@users.json", `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email"],"fieldsTerminatedBy":"\t","fieldsEscapedBy":"\\","linesTerminatedBy":"\n"}}`)
+	mustWrite("fx@users.json", `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email","notes"],"fieldsTerminatedBy":"\t","fieldsEscapedBy":"\\","linesTerminatedBy":"\n"}}`)
 	mustWrite("fx@users.sql", "")
 
-	writeChunk := func(idx int, rows [][3]string) {
+	// rows are 4-cell tuples in physical order: id, name, email, notes.
+	// The notes cell is already TSV-escaped (the on-disk byte form).
+	type row [4]string
+	writeChunk := func(suffix string, idx int, rows []row) {
 		var raw bytes.Buffer
 		for _, r := range rows {
 			raw.WriteString(r[0])
@@ -43,9 +50,10 @@ func buildTinyDump(t *testing.T, dir string) {
 			raw.WriteString(r[1])
 			raw.WriteByte('\t')
 			raw.WriteString(r[2])
+			raw.WriteByte('\t')
+			raw.WriteString(r[3])
 			raw.WriteByte('\n')
 		}
-		// zstd-encode
 		var compressed bytes.Buffer
 		zw, err := lzstd.NewWriter(&compressed)
 		if err != nil {
@@ -57,27 +65,30 @@ func buildTinyDump(t *testing.T, dir string) {
 		if err := zw.Close(); err != nil {
 			t.Fatal(err)
 		}
-		chunkPath := filepath.Join(dir, "fx@users@@"+strconv.Itoa(idx)+".tsv.zst")
+		chunkPath := filepath.Join(dir, "fx@users"+suffix+strconv.Itoa(idx)+".tsv.zst")
 		if err := os.WriteFile(chunkPath, compressed.Bytes(), 0644); err != nil {
 			t.Fatal(err)
 		}
-		// Empty .idx is fine; we regenerate.
-		if err := os.WriteFile(chunkPath+".idx", nil, 0644); err != nil {
+		var idxBuf [8]byte
+		binary.BigEndian.PutUint64(idxBuf[:], uint64(raw.Len()))
+		if err := os.WriteFile(chunkPath+".idx", idxBuf[:], 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeChunk(0, [][3]string{
-		{"1", "Alice", "a@x.com"},
-		{"2", "Bob", "b@x.com"},
-		{"3", "Carol", "c@x.com"},
+	// Chunk 0: non-final @<n>. Notes cells contain TSV-escaped escape chars.
+	writeChunk("@", 0, []row{
+		{"1", "Alice", "a@x.com", `tab\there`},
+		{"2", "Bob", "b@x.com", `newline\nhere`},
+		{"3", "Carol", "c@x.com", `backslash\\here`},
 	})
-	writeChunk(1, [][3]string{
-		{"4", "Dave", "d@x.com"},
-		{"5", "Eve", "e@x.com"},
-		{"6", "Frank", "f@x.com"},
+	// Chunk 1: final @@<n>. Notes cells contain NUL, \Z, \b, multi-byte UTF-8, \N.
+	writeChunk("@@", 1, []row{
+		{"4", "Dave", "d@x.com", `nul\0here`},
+		{"5", "Eve", "e@x.com", `ctrlz\Zhere\bbs`},
+		{"6", "Frank", "f@x.com", `日本語/français`},
+		{"7", "Grace", "g@x.com", `\N`},
 	})
 
-	// Done marker — last so a watcher could rely on it.
 	mustWrite("@.done.json", "{}")
 }
 
@@ -116,6 +127,34 @@ func addUnconfiguredTable(t *testing.T, dir string) {
 	if err := os.WriteFile(filepath.Join(dir, "fx@orders@@0.tsv.zst.idx"), idxBuf[:], 0644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// readChunkRows decompresses a .zst chunk and returns its rows as [][]byte cells.
+func readChunkRows(t *testing.T, path string) [][][]byte {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := lzstd.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	rows := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
+	out := make([][][]byte, len(rows))
+	for i, row := range rows {
+		out[i] = bytes.Split(row, []byte{'\t'})
+	}
+	return out
 }
 
 func writeConfig(t *testing.T, dir string) string {
@@ -175,50 +214,38 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// 2. Email column is replaced (no more "@x.com").
-	// 3. id and name columns are byte-identical.
-	verifyChunk := func(idx int, expectedNames []string, expectedIDs []string) {
-		chunkPath := filepath.Join(outDir, "fx@users@@"+strconv.Itoa(idx)+".tsv.zst")
-		f, err := os.Open(chunkPath)
-		if err != nil {
-			t.Fatal(err)
+	// 2. Verify each chunk: id/name/notes are byte-identical to input;
+	//    email no longer contains "@x.com".
+	verifyChunk := func(srcPath, dstPath string) {
+		srcRows := readChunkRows(t, srcPath)
+		dstRows := readChunkRows(t, dstPath)
+		if len(srcRows) != len(dstRows) {
+			t.Fatalf("%s: %d rows in input, %d in output", filepath.Base(srcPath), len(srcRows), len(dstRows))
 		}
-		defer f.Close()
-		zr, err := lzstd.NewReader(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer zr.Close()
-		data, err := io.ReadAll(zr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rows := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
-		if len(rows) != len(expectedNames) {
-			t.Fatalf("chunk %d: %d rows, expected %d", idx, len(rows), len(expectedNames))
-		}
-		for i, row := range rows {
-			cells := bytes.Split(row, []byte{'\t'})
-			if len(cells) != 3 {
-				t.Errorf("chunk %d row %d: %d cells, want 3", idx, i, len(cells))
+		for i := range srcRows {
+			src, dst := srcRows[i], dstRows[i]
+			if len(src) != 4 || len(dst) != 4 {
+				t.Errorf("%s row %d: cell counts %d/%d, want 4/4", filepath.Base(srcPath), i, len(src), len(dst))
 				continue
 			}
-			if string(cells[0]) != expectedIDs[i] {
-				t.Errorf("chunk %d row %d id = %q, want %q", idx, i, cells[0], expectedIDs[i])
+			// id, name, notes — byte-identical (passthrough).
+			for _, ci := range []int{0, 1, 3} {
+				if !bytes.Equal(src[ci], dst[ci]) {
+					t.Errorf("%s row %d cell %d: passthrough mismatch: in=%q out=%q",
+						filepath.Base(srcPath), i, ci, src[ci], dst[ci])
+				}
 			}
-			if string(cells[1]) != expectedNames[i] {
-				t.Errorf("chunk %d row %d name = %q, want %q", idx, i, cells[1], expectedNames[i])
+			// email — must differ from "@x.com" pattern but contain "@".
+			if bytes.Contains(dst[2], []byte("@x.com")) {
+				t.Errorf("%s row %d email %q still contains @x.com", filepath.Base(srcPath), i, dst[2])
 			}
-			if bytes.Contains(cells[2], []byte("@x.com")) {
-				t.Errorf("chunk %d row %d email %q still contains @x.com", idx, i, cells[2])
-			}
-			if !bytes.Contains(cells[2], []byte{'@'}) {
-				t.Errorf("chunk %d row %d email %q has no @", idx, i, cells[2])
+			if !bytes.Contains(dst[2], []byte{'@'}) {
+				t.Errorf("%s row %d email %q has no @", filepath.Base(srcPath), i, dst[2])
 			}
 		}
 	}
-	verifyChunk(0, []string{"Alice", "Bob", "Carol"}, []string{"1", "2", "3"})
-	verifyChunk(1, []string{"Dave", "Eve", "Frank"}, []string{"4", "5", "6"})
+	verifyChunk(filepath.Join(inDir, "fx@users@0.tsv.zst"), filepath.Join(outDir, "fx@users@0.tsv.zst"))
+	verifyChunk(filepath.Join(inDir, "fx@users@@1.tsv.zst"), filepath.Join(outDir, "fx@users@@1.tsv.zst"))
 }
 
 func TestEndToEnd_UnconfiguredTablePassthrough(t *testing.T) {
