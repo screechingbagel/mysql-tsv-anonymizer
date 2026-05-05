@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
@@ -78,6 +79,43 @@ func buildTinyDump(t *testing.T, dir string) {
 
 	// Done marker — last so a watcher could rely on it.
 	mustWrite("@.done.json", "{}")
+}
+
+// addUnconfiguredTable extends a built tiny-dump with a second table "orders"
+// that the test config does not reference. Used by A0 regression tests.
+func addUnconfiguredTable(t *testing.T, dir string) {
+	t.Helper()
+	mustWrite := func(rel, body string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("fx@orders.json", `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","amount"],"fieldsTerminatedBy":"\t","fieldsEscapedBy":"\\","linesTerminatedBy":"\n"}}`)
+	mustWrite("fx@orders.sql", "")
+
+	var raw bytes.Buffer
+	raw.WriteString("100\t9.99\n")
+	raw.WriteString("101\t14.50\n")
+	var compressed bytes.Buffer
+	zw, err := lzstd.NewWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(zw, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fx@orders@@0.tsv.zst"), compressed.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// .idx is a single 8-byte BE uint64 = decompressed length.
+	var idxBuf [8]byte
+	binary.BigEndian.PutUint64(idxBuf[:], uint64(raw.Len()))
+	if err := os.WriteFile(filepath.Join(dir, "fx@orders@@0.tsv.zst.idx"), idxBuf[:], 0644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeConfig(t *testing.T, dir string) string {
@@ -181,6 +219,34 @@ func TestEndToEnd(t *testing.T) {
 	}
 	verifyChunk(0, []string{"Alice", "Bob", "Carol"}, []string{"1", "2", "3"})
 	verifyChunk(1, []string{"Dave", "Eve", "Frank"}, []string{"4", "5", "6"})
+}
+
+func TestEndToEnd_UnconfiguredTablePassthrough(t *testing.T) {
+	inDir := t.TempDir()
+	buildTinyDump(t, inDir)
+	addUnconfiguredTable(t, inDir)
+	cfg := writeConfig(t, t.TempDir())
+	outDir := filepath.Join(t.TempDir(), "clean")
+
+	o := opts{InDir: inDir, OutDir: outDir, ConfigPath: cfg, Seed: 42, Workers: 2}
+	if err := run(context.Background(), o); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// Both the chunk and its .idx must exist and be byte-identical.
+	for _, name := range []string{"fx@orders@@0.tsv.zst", "fx@orders@@0.tsv.zst.idx"} {
+		got, err := os.ReadFile(filepath.Join(outDir, name))
+		if err != nil {
+			t.Fatalf("output missing %s: %v", name, err)
+		}
+		want, err := os.ReadFile(filepath.Join(inDir, name))
+		if err != nil {
+			t.Fatalf("input missing %s: %v", name, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s differs (in %d bytes, out %d bytes)", name, len(want), len(got))
+		}
+	}
 }
 
 func TestEndToEnd_Determinism(t *testing.T) {
