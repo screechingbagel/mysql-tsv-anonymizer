@@ -147,6 +147,39 @@ func tablesKeys(t map[string]*TableEntry) []string {
 	return out
 }
 
+func TestWalkManifest_TopLevelSQLFilesNotPhantomTables(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(rel, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("@.done.json", "{}")
+	mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
+	mustWrite("@.sql", "")
+	mustWrite("@.post.sql", "")
+	mustWrite("@.users.sql", "")
+
+	m, err := WalkManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Tables) != 0 {
+		t.Errorf("Tables should be empty, got: %v", tablesKeys(m.Tables))
+	}
+	// Both top-level SQL files must still be in PassthroughFiles so they copy through.
+	have := map[string]bool{}
+	for _, p := range m.PassthroughFiles {
+		have[filepath.Base(p)] = true
+	}
+	for _, want := range []string{"@.post.sql", "@.users.sql"} {
+		if !have[want] {
+			t.Errorf("PassthroughFiles missing %s", want)
+		}
+	}
+}
+
 func TestWalkManifest_MissingDoneMarker(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "@.json"), []byte("{}"), 0644); err != nil {

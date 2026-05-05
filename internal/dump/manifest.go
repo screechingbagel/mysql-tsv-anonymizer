@@ -100,7 +100,7 @@ func WalkManifest(dir string) (*Manifest, error) {
 			m.PassthroughFiles = append(m.PassthroughFiles, full)
 			continue
 		}
-		if strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
+		if !strings.HasPrefix(name, "@.") && strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
 			tableKey := strings.TrimSuffix(strings.TrimSuffix(name, ".json"), ".sql")
 			te := m.tableEntry(tableKey)
 			if strings.HasSuffix(name, ".json") {
