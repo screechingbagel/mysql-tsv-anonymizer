@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	lzstd "github.com/screechingbagel/mysql-tsv-anonymizer/internal/zstd"
@@ -246,6 +247,11 @@ func TestEndToEnd(t *testing.T) {
 	}
 	verifyChunk(filepath.Join(inDir, "fx@users@0.tsv.zst"), filepath.Join(outDir, "fx@users@0.tsv.zst"))
 	verifyChunk(filepath.Join(inDir, "fx@users@@1.tsv.zst"), filepath.Join(outDir, "fx@users@@1.tsv.zst"))
+
+	// 3. Each rewritten chunk's .idx must declare the correct decompressed length.
+	for _, base := range []string{"fx@users@0.tsv.zst", "fx@users@@1.tsv.zst"} {
+		assertIdxMatchesChunk(t, filepath.Join(outDir, base), filepath.Join(outDir, base+".idx"))
+	}
 }
 
 func TestEndToEnd_UnconfiguredTablePassthrough(t *testing.T) {
@@ -273,6 +279,38 @@ func TestEndToEnd_UnconfiguredTablePassthrough(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("%s differs (in %d bytes, out %d bytes)", name, len(want), len(got))
 		}
+	}
+}
+
+// assertIdxMatchesChunk reads idxPath (8-byte BE uint64), decompresses
+// chunkPath, and asserts the lengths match.
+func assertIdxMatchesChunk(t *testing.T, chunkPath, idxPath string) {
+	t.Helper()
+	idxBytes, err := os.ReadFile(idxPath)
+	if err != nil {
+		t.Fatalf("read idx %s: %v", idxPath, err)
+	}
+	if len(idxBytes) != 8 {
+		t.Fatalf("idx %s: %d bytes, want 8", idxPath, len(idxBytes))
+	}
+	declared := binary.BigEndian.Uint64(idxBytes)
+
+	f, err := os.Open(chunkPath)
+	if err != nil {
+		t.Fatalf("open chunk %s: %v", chunkPath, err)
+	}
+	defer f.Close()
+	zr, err := lzstd.NewReader(f)
+	if err != nil {
+		t.Fatalf("zstd reader %s: %v", chunkPath, err)
+	}
+	defer zr.Close()
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("decompress %s: %v", chunkPath, err)
+	}
+	if uint64(len(data)) != declared {
+		t.Errorf("%s: idx says %d bytes, decompressed is %d bytes", chunkPath, declared, len(data))
 	}
 }
 
@@ -308,6 +346,74 @@ func TestEndToEnd_Determinism(t *testing.T) {
 		}
 		if !bytes.Equal(a, b) {
 			t.Errorf("nondeterminism: %s differs between runs (lens %d/%d)", e.Name(), len(a), len(b))
+		}
+	}
+}
+
+func TestEndToEnd_DifferentSeeds(t *testing.T) {
+	inDir := t.TempDir()
+	buildTinyDump(t, inDir)
+	cfg := writeConfig(t, t.TempDir())
+
+	out1 := filepath.Join(t.TempDir(), "clean1")
+	out2 := filepath.Join(t.TempDir(), "clean2")
+	o1 := opts{InDir: inDir, OutDir: out1, ConfigPath: cfg, Seed: 42, Workers: 2}
+	o2 := opts{InDir: inDir, OutDir: out2, ConfigPath: cfg, Seed: 43, Workers: 2}
+	if err := run(context.Background(), o1); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), o2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check the email column (the only configured/substituted column).
+	differs := false
+	for _, base := range []string{"fx@users@0.tsv.zst", "fx@users@@1.tsv.zst"} {
+		rows1 := readChunkRows(t, filepath.Join(out1, base))
+		rows2 := readChunkRows(t, filepath.Join(out2, base))
+		if len(rows1) != len(rows2) {
+			t.Fatalf("%s: row counts %d/%d", base, len(rows1), len(rows2))
+		}
+		for i := range rows1 {
+			if !bytes.Equal(rows1[i][2], rows2[i][2]) {
+				differs = true
+				break
+			}
+		}
+		if differs {
+			break
+		}
+	}
+	if !differs {
+		t.Error("seeds 42 and 43 produced byte-identical email cells across both chunks")
+	}
+}
+
+func TestEndToEnd_PreCancelledContextLeavesNoTmpAndNoDoneMarker(t *testing.T) {
+	inDir := t.TempDir()
+	buildTinyDump(t, inDir)
+	cfg := writeConfig(t, t.TempDir())
+	outDir := filepath.Join(t.TempDir(), "clean")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel: every chunk job will observe ctx.Err() before running.
+
+	o := opts{InDir: inDir, OutDir: outDir, ConfigPath: cfg, Seed: 42, Workers: 2}
+	err := run(ctx, o)
+	if err == nil {
+		t.Fatal("expected run to fail under cancelled context, got nil")
+	}
+
+	entries, readErr := os.ReadDir(outDir)
+	if readErr != nil {
+		return // outDir wasn't created at all — also a valid clean state.
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("found leftover .tmp file in outDir: %s", e.Name())
+		}
+		if e.Name() == "@.done.json" {
+			t.Errorf("@.done.json present in outDir despite cancelled run")
 		}
 	}
 }

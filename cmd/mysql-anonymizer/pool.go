@@ -77,7 +77,10 @@ func RunPool(
 		}
 	}()
 	wg.Wait()
-	return firstErr
+	if firstErr != nil {
+		return firstErr
+	}
+	return ctx.Err()
 }
 
 // deriveSeed mixes (jobSeed, tableKey, chunkIdx) into a (hi, lo) pair for PCG.
