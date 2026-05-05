@@ -29,41 +29,53 @@ func tablePart(manifestKey string) string {
 // It returns a map keyed by the manifest key ("<schema>@<table>") for every
 // table referenced in the config, or an error describing the first mismatch.
 func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, error) {
-	schemas := make(map[string]*tableSchema, len(rc.Filters))
+	// Parse every table's per-table json once, asserting compression.
+	metas := make(map[string]*dump.TableMeta, len(m.Tables))
+	for tableKey, te := range m.Tables {
+		if te.MetaPath == "" {
+			// Unconfigured tables with missing sidecar are a dump error too,
+			// but only flag them if the dump claims to have chunks for the table.
+			if len(te.Chunks) > 0 {
+				return nil, fmt.Errorf("validate: table %q has chunks but no per-table json sidecar", tableKey)
+			}
+			continue
+		}
+		tm, err := dump.ReadTableMeta(te.MetaPath)
+		if err != nil {
+			return nil, fmt.Errorf("validate: read meta for table %q: %w", tableKey, err)
+		}
+		if tm.Compression != "zstd" {
+			return nil, fmt.Errorf("validate: table %q has compression %q; only zstd is supported",
+				tableKey, tm.Compression)
+		}
+		metas[tableKey] = tm
+	}
 
+	schemas := make(map[string]*tableSchema, len(rc.Filters))
 	for tableKey, tf := range rc.Filters {
-		// Find matching manifest entries where the table-name portion matches.
 		var matches []string
 		for k := range m.Tables {
 			if tablePart(k) == tableKey {
 				matches = append(matches, k)
 			}
 		}
-
 		switch len(matches) {
 		case 0:
 			return nil, fmt.Errorf("validate: config references table %q but it is not in the dump", tableKey)
 		case 1:
-			// exactly one match — proceed below
+			// proceed
 		default:
 			return nil, fmt.Errorf("validate: table %q is ambiguous across schemas: %s", tableKey, strings.Join(matches, ", "))
 		}
 
 		matched := matches[0]
-		te := m.Tables[matched]
-
-		if te.MetaPath == "" {
-			return nil, fmt.Errorf("validate: table %q has no per-table json sidecar", matched)
-		}
-
-		tm, err := dump.ReadTableMeta(te.MetaPath)
-		if err != nil {
-			return nil, fmt.Errorf("validate: read meta for table %q: %w", tableKey, err)
-		}
-
-		if tm.Compression != "zstd" {
-			return nil, fmt.Errorf("validate: table %q has compression %q; only zstd is supported",
-				tableKey, tm.Compression)
+		tm, ok := metas[matched]
+		if !ok {
+			// Should be unreachable: matched key came from m.Tables; the loop
+			// above either parsed its meta or errored. The only path that skips
+			// is MetaPath == "" with no chunks — for a configured table that's
+			// a dump error.
+			return nil, fmt.Errorf("validate: configured table %q has no per-table json sidecar", matched)
 		}
 
 		cols := tm.Options.Columns
@@ -71,19 +83,16 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 		for i, c := range cols {
 			colIdx[c] = i
 		}
-
 		for colName := range tf.Columns {
 			if _, ok := colIdx[colName]; !ok {
 				return nil, fmt.Errorf("validate: config references column %q.%q but it is not in the dump (have %v)",
 					tableKey, colName, cols)
 			}
 		}
-
 		schemas[matched] = &tableSchema{
 			Columns:  cols,
 			ColIndex: colIdx,
 		}
 	}
-
 	return schemas, nil
 }

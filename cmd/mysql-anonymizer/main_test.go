@@ -235,6 +235,48 @@ filters:
 	}
 }
 
+func TestValidate_UnconfiguredNonZstd(t *testing.T) {
+	dir := t.TempDir()
+	// users is configured (zstd); orders is unconfigured (none) — must still fail.
+	files := map[string]string{
+		"@.done.json":             `{}`,
+		"@.json":                  `{"version":"2.0.1","dumper":"synthetic"}`,
+		"fx.json":                 `{}`,
+		"fx.sql":                  ``,
+		"fx@users.json":           `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email"]}}`,
+		"fx@users.sql":            ``,
+		"fx@users@@0.tsv.zst":     ``,
+		"fx@users@@0.tsv.zst.idx": ``,
+		"fx@orders.json":          `{"compression":"none","extension":"tsv","options":{"columns":["id","amount"]}}`,
+		"fx@orders.sql":           ``,
+		"fx@orders@@0.tsv":        ``,
+		"fx@orders@@0.tsv.idx":    ``,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	m, err := dump.WalkManifest(dir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	rc := mkConfig(t, `
+filters:
+  users:
+    columns:
+      email:
+        value: "fake@example.com"
+`)
+	_, err = Validate(rc, m)
+	if err == nil {
+		t.Fatal("expected non-zstd error for unconfigured table, got nil")
+	}
+	if !strings.Contains(err.Error(), "zstd") || !strings.Contains(err.Error(), "orders") {
+		t.Errorf("expected error mentioning zstd and orders, got: %v", err)
+	}
+}
+
 func TestRun_RejectsVersion3(t *testing.T) {
 	dir := mkTinyDump(t)
 	// Overwrite @.json with a 3.x version.
