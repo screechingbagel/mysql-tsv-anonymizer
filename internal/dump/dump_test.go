@@ -99,6 +99,46 @@ func TestWalkManifest_TinyTree(t *testing.T) {
 	}
 }
 
+func TestWalkManifest_ChunksInPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(rel, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("@.done.json", "{}")
+	mustWrite("@.json", `{"version":"2.0.1","dumper":"synthetic"}`)
+	mustWrite("fx@t.json", `{"options":{"columns":["id"]}}`)
+	mustWrite("fx@t@0.tsv.zst", "")
+	mustWrite("fx@t@0.tsv.zst.idx", "")
+	mustWrite("fx@t@@1.tsv.zst", "")
+	mustWrite("fx@t@@1.tsv.zst.idx", "")
+
+	m, err := WalkManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]bool{
+		"fx@t@0.tsv.zst":      false,
+		"fx@t@0.tsv.zst.idx":  false,
+		"fx@t@@1.tsv.zst":     false,
+		"fx@t@@1.tsv.zst.idx": false,
+	}
+	for _, p := range m.PassthroughFiles {
+		base := filepath.Base(p)
+		if _, ok := want[base]; ok {
+			want[base] = true
+		}
+	}
+	for k, v := range want {
+		if !v {
+			t.Errorf("PassthroughFiles missing %s", k)
+		}
+	}
+}
+
 func tablesKeys(t map[string]*TableEntry) []string {
 	out := make([]string, 0, len(t))
 	for k := range t {

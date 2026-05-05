@@ -93,9 +93,11 @@ func WalkManifest(dir string) (*Manifest, error) {
 				IdxPath:  full + ".idx",
 				Final:    sep == "@@",
 			})
+			m.PassthroughFiles = append(m.PassthroughFiles, full)
 			continue
 		}
 		if strings.HasSuffix(name, ".tsv.zst.idx") {
+			m.PassthroughFiles = append(m.PassthroughFiles, full)
 			continue
 		}
 		if strings.Contains(name, "@") && (strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sql")) {
