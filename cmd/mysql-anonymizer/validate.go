@@ -11,7 +11,8 @@ import (
 // tableSchema holds the ordered column list for one table, as derived from
 // the per-table sidecar JSON in the dump.
 type tableSchema struct {
-	Columns []string
+	ConfigTable string
+	Columns     []string
 }
 
 // tablePart returns the table name portion of a manifest key of the form
@@ -89,7 +90,8 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 			}
 		}
 		schemas[matched] = &tableSchema{
-			Columns: cols,
+			ConfigTable: tableKey,
+			Columns:     cols,
 		}
 	}
 	return schemas, nil

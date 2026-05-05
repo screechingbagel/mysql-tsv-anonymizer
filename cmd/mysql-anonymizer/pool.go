@@ -105,8 +105,7 @@ func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint
 	if err != nil {
 		return fmt.Errorf("compile config: %w", err)
 	}
-	tableName := tablePart(j.tableKey)
-	colRules := cc.Rules[tableName]
+	colRules := cc.Rules[j.schema.ConfigTable]
 	slots := make([]*template.Template, len(j.schema.Columns))
 	for i, col := range j.schema.Columns {
 		slots[i] = colRules[col]
@@ -154,7 +153,7 @@ func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint
 	tr := tsv.NewReader(zr)
 
 	hook := func(_ int64) error { return ctx.Err() }
-	if err := anon.ProcessAllWithRowHook(tr, tw, slots, f, hook); err != nil {
+	if err := anon.ProcessAllWithRowHook(tr, tw, slots, hook); err != nil {
 		return err
 	}
 	if err := tw.Flush(); err != nil {

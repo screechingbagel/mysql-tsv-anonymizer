@@ -28,17 +28,15 @@ type RowEnded func(bytesAtRowEnd int64) error
 // ProcessAll anonymizes every row from r and writes it to w, using slots to
 // decide per-column treatment. It is equivalent to ProcessAllWithRowHook with
 // a nil hook.
-func ProcessAll(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, f *faker.Faker) error {
-	_ = f // reserved: f's funcmap is already closed over by each template
-	return ProcessAllWithRowHook(r, w, slots, f, nil)
+func ProcessAll(r *tsv.Reader, w *tsv.Writer, slots []*template.Template) error {
+	return ProcessAllWithRowHook(r, w, slots, nil)
 }
 
 // ProcessAllWithRowHook anonymizes every row from r and writes it to w. After
 // each row is written, hook (if non-nil) is called with the byte offset at the
 // end of that row. Processing stops on the first error; io.EOF from r is
 // treated as clean termination and returns nil.
-func ProcessAllWithRowHook(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, f *faker.Faker, hook RowEnded) error {
-	_ = f // reserved: f's funcmap is already closed over by each template
+func ProcessAllWithRowHook(r *tsv.Reader, w *tsv.Writer, slots []*template.Template, hook RowEnded) error {
 	var sb strings.Builder
 	for {
 		cells, err := r.Next()

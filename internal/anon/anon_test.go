@@ -24,12 +24,12 @@ func newFaker() *faker.Faker {
 }
 
 // runProcess runs ProcessAll over the given raw TSV bytes and returns the output bytes.
-func runProcess(t *testing.T, input string, slots []*template.Template, f *faker.Faker) (string, error) {
+func runProcess(t *testing.T, input string, slots []*template.Template) (string, error) {
 	t.Helper()
 	r := tsv.NewReader(strings.NewReader(input))
 	var buf bytes.Buffer
 	w := tsv.NewWriter(&buf)
-	err := ProcessAll(r, w, slots, f)
+	err := ProcessAll(r, w, slots)
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +43,7 @@ func runProcess(t *testing.T, input string, slots []*template.Template, f *faker
 func TestProcessRow_PassthroughOnly(t *testing.T) {
 	input := "alice\tbob\tcarol\n"
 	slots := []*template.Template{nil, nil, nil}
-	got, err := runProcess(t, input, slots, newFaker())
+	got, err := runProcess(t, input, slots)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestProcessRow_Substitution(t *testing.T) {
 	tmpl := mustTemplate(`REPLACED`, fm)
 	slots := []*template.Template{nil, nil, tmpl}
 
-	got, err := runProcess(t, "alice\tbob\tcarol\n", slots, f)
+	got, err := runProcess(t, "alice\tbob\tcarol\n", slots)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestProcessRow_NullSentinel(t *testing.T) {
 	tmpl := mustTemplate(`{{ null }}`, fm)
 	slots := []*template.Template{nil, tmpl}
 
-	got, err := runProcess(t, "alice\tsome_value\n", slots, f)
+	got, err := runProcess(t, "alice\tsome_value\n", slots)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestProcessRow_SentinelMisuseFails(t *testing.T) {
 	tmpl := mustTemplate(`prefix-{{ null }}`, fm)
 	slots := []*template.Template{tmpl}
 
-	_, err := runProcess(t, "alice\n", slots, f)
+	_, err := runProcess(t, "alice\n", slots)
 	if err == nil {
 		t.Fatal("expected error for sentinel misuse, got nil")
 	}
@@ -116,7 +116,7 @@ func TestProcessRow_SentinelMisuseFails(t *testing.T) {
 // TestProcessRow_CellCountMismatch — 2 cells but 3 slots → error.
 func TestProcessRow_CellCountMismatch(t *testing.T) {
 	slots := []*template.Template{nil, nil, nil}
-	_, err := runProcess(t, "alice\tbob\n", slots, newFaker())
+	_, err := runProcess(t, "alice\tbob\n", slots)
 	if err == nil {
 		t.Fatal("expected error for cell/slot count mismatch, got nil")
 	}
@@ -126,7 +126,7 @@ func TestProcessRow_CellCountMismatch(t *testing.T) {
 func TestProcessAll_MultipleRows(t *testing.T) {
 	input := "a\tb\nc\td\n"
 	slots := []*template.Template{nil, nil}
-	got, err := runProcess(t, input, slots, newFaker())
+	got, err := runProcess(t, input, slots)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestProcessAllWithRowHook(t *testing.T) {
 		return nil
 	})
 
-	err := ProcessAllWithRowHook(r, w, slots, newFaker(), hook)
+	err := ProcessAllWithRowHook(r, w, slots, hook)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestProcessAll_EOF(t *testing.T) {
 	r := tsv.NewReader(strings.NewReader(""))
 	var buf bytes.Buffer
 	w := tsv.NewWriter(&buf)
-	err := ProcessAll(r, w, []*template.Template{}, newFaker())
+	err := ProcessAll(r, w, []*template.Template{})
 	if err != nil {
 		t.Fatalf("unexpected error on empty input: %v", err)
 	}
