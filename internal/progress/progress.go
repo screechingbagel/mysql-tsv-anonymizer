@@ -3,7 +3,11 @@
 package progress
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,4 +74,117 @@ func renderLine(doneChunks, totalChunks int, doneBytes, totalBytes uint64, elaps
 		formatBytes(doneBytes), formatBytes(totalBytes),
 		rateStr, etaStr,
 	)
+}
+
+// Reporter prints a refreshing one-line status to its writer (stderr in
+// production). One Reporter is created per run; workers report completed
+// chunks via ChunkDone, which is safe for concurrent use.
+type Reporter struct {
+	totalChunks int
+	totalBytes  uint64
+
+	doneChunks atomic.Uint64
+	doneBytes  atomic.Uint64
+
+	start time.Time
+	out   io.Writer
+	isTTY bool
+	tick  time.Duration
+
+	stopCh chan struct{}
+	doneCh chan struct{}
+}
+
+// New constructs a Reporter writing to out. Defaults: TTY auto-detected
+// from os.Stderr if out is os.Stderr; otherwise non-TTY. Tick is 500ms on
+// TTY, 5s on non-TTY. Both are exported as fields for test injection.
+func New(totalChunks int, totalBytes uint64, out io.Writer) *Reporter {
+	r := &Reporter{
+		totalChunks: totalChunks,
+		totalBytes:  totalBytes,
+		out:         out,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+	}
+	if f, ok := out.(*os.File); ok {
+		r.isTTY = isCharDevice(f)
+	}
+	if r.isTTY {
+		r.tick = 500 * time.Millisecond
+	} else {
+		r.tick = 5 * time.Second
+	}
+	return r
+}
+
+// isCharDevice reports whether f looks like a terminal (no x/term dep).
+func isCharDevice(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// Start launches the ticker goroutine. It exits when ctx is done or Stop
+// is called.
+func (r *Reporter) Start(ctx context.Context) {
+	r.start = time.Now()
+	go r.loop(ctx)
+}
+
+func (r *Reporter) loop(ctx context.Context) {
+	defer close(r.doneCh)
+	t := time.NewTicker(r.tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.stopCh:
+			return
+		case <-t.C:
+			r.render()
+		}
+	}
+}
+
+func (r *Reporter) render() {
+	line := renderLine(
+		int(r.doneChunks.Load()), r.totalChunks,
+		r.doneBytes.Load(), r.totalBytes,
+		time.Since(r.start),
+	)
+	if r.isTTY {
+		fmt.Fprintf(r.out, "\r\x1b[K%s", line)
+	} else {
+		fmt.Fprintln(r.out, line)
+	}
+}
+
+// ChunkDone records a successful chunk completion. compressedBytes is the
+// on-disk size of the input chunk (used for the progress denominator).
+func (r *Reporter) ChunkDone(compressedBytes uint64) {
+	r.doneChunks.Add(1)
+	r.doneBytes.Add(compressedBytes)
+}
+
+// Stop signals the ticker to exit, waits for it, then prints a final line.
+// If runErr is non-nil the final line is prefixed "aborted at ...".
+func (r *Reporter) Stop(runErr error) {
+	close(r.stopCh)
+	<-r.doneCh
+	done := r.doneChunks.Load()
+	bytesDone := r.doneBytes.Load()
+	elapsed := time.Since(r.start)
+	body := renderLine(int(done), r.totalChunks, bytesDone, r.totalBytes, elapsed)
+	prefix := "done "
+	if runErr != nil {
+		prefix = fmt.Sprintf("aborted at %d/%d chunks ", done, r.totalChunks)
+	}
+	if r.isTTY {
+		fmt.Fprintf(r.out, "\r\x1b[K%s%s\n", prefix, body)
+	} else {
+		fmt.Fprintf(r.out, "%s%s\n", prefix, body)
+	}
 }

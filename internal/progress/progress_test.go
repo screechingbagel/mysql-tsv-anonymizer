@@ -1,6 +1,10 @@
 package progress
 
 import (
+	"bytes"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -70,5 +74,56 @@ func TestRenderLine_AllDone(t *testing.T) {
 	want := "[47/47 chunks · 1.0 GiB / 1.0 GiB · 102 MiB/s · ETA 0s]"
 	if got != want {
 		t.Errorf("renderLine = %q, want %q", got, want)
+	}
+}
+
+func TestReporter_ChunkDoneAccumulates(t *testing.T) {
+	r := New(10, 1000, &bytes.Buffer{})
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() {
+			r.ChunkDone(100)
+		})
+	}
+	wg.Wait()
+	if got := r.doneChunks.Load(); got != 10 {
+		t.Errorf("doneChunks = %d, want 10", got)
+	}
+	if got := r.doneBytes.Load(); got != 1000 {
+		t.Errorf("doneBytes = %d, want 1000", got)
+	}
+}
+
+func TestReporter_StopPrintsFinalLine(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(2, 2048, &buf)
+	r.isTTY = false    // force non-TTY mode
+	r.tick = time.Hour // disable mid-run ticks
+	ctx := t.Context()
+	r.Start(ctx)
+	r.ChunkDone(1024)
+	r.ChunkDone(1024)
+	r.Stop(nil)
+	out := buf.String()
+	if !strings.Contains(out, "2/2 chunks") {
+		t.Errorf("final output missing chunk total: %q", out)
+	}
+	if !strings.Contains(out, "done") {
+		t.Errorf("final output missing 'done' marker: %q", out)
+	}
+}
+
+func TestReporter_StopOnError(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(5, 5000, &buf)
+	r.isTTY = false
+	r.tick = time.Hour
+	ctx := t.Context()
+	r.Start(ctx)
+	r.ChunkDone(1000)
+	r.Stop(fmt.Errorf("boom"))
+	out := buf.String()
+	if !strings.Contains(out, "aborted at 1/5 chunks") {
+		t.Errorf("error final output missing 'aborted at 1/5 chunks': %q", out)
 	}
 }
