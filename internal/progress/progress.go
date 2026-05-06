@@ -2,7 +2,10 @@
 // status lines to stderr while the worker pool runs.
 package progress
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // formatBytes renders n in human-readable IEC units (KiB / MiB / GiB / TiB).
 // Uses one decimal for KiB and above, no decimals for plain bytes.
@@ -21,4 +24,24 @@ func formatBytes(n uint64) string {
 		exp = len(suffixes) - 1
 	}
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffixes[exp])
+}
+
+// formatDuration renders d as "HhMmSs" / "MmSs" / "Ss", rounded to whole
+// seconds. Sub-second durations render as "0s".
+func formatDuration(d time.Duration) string {
+	s := int64(d / time.Second)
+	if s <= 0 {
+		return "0s"
+	}
+	h := s / 3600
+	m := (s % 3600) / 60
+	sec := s % 60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh%dm%ds", h, m, sec)
+	case m > 0:
+		return fmt.Sprintf("%dm%ds", m, sec)
+	default:
+		return fmt.Sprintf("%ds", sec)
+	}
 }
