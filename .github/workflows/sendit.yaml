@@ -21,11 +21,13 @@ jobs:
       output: image
       push: ${{ github.event_name != 'pull_request' }}
       platforms: linux/amd64,linux/arm64
-      meta-images: name/app
+      meta-images: ghcr.io/name/app
       meta-tags: |
         type=ref,event=branch
         type=ref,event=pr
         type=semver,pattern={{version}}
+      cache: true
+      cache-mode: max
       file: Containerfile
     secrets:
       registry-auths: |
