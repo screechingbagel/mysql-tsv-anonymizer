@@ -45,3 +45,29 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", sec)
 	}
 }
+
+// renderLine formats one status line. It is a pure function: same inputs
+// always produce the same string, with no I/O and no clock access.
+//
+// Rate is reported as integer MiB/s. When elapsed is zero (or rounds to
+// zero), rate and ETA both render as "--". When rate is non-zero but
+// remaining bytes are zero, ETA renders as "0s".
+func renderLine(doneChunks, totalChunks int, doneBytes, totalBytes uint64, elapsed time.Duration) string {
+	rateStr := "--"
+	etaStr := "--"
+	if elapsed >= time.Second {
+		bytesPerSec := float64(doneBytes) / elapsed.Seconds()
+		mibPerSec := bytesPerSec / (1024 * 1024)
+		rateStr = fmt.Sprintf("%d MiB/s", int64(mibPerSec))
+		if bytesPerSec > 0 && totalBytes >= doneBytes {
+			remaining := float64(totalBytes - doneBytes)
+			eta := time.Duration(remaining/bytesPerSec) * time.Second
+			etaStr = formatDuration(eta)
+		}
+	}
+	return fmt.Sprintf("[%d/%d chunks · %s / %s · %s · ETA %s]",
+		doneChunks, totalChunks,
+		formatBytes(doneBytes), formatBytes(totalBytes),
+		rateStr, etaStr,
+	)
+}

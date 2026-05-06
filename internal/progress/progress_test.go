@@ -42,3 +42,33 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderLine_NormalProgress(t *testing.T) {
+	got := renderLine(14, 47,
+		1503238553,     // 1.4 GiB
+		6227480576,     // 5.8 GiB
+		60*time.Second, // elapsed
+	)
+	// 1.4 GiB / 60s ≈ 25.05 MB/s ≈ 23.9 MiB/s; ETA = (5.8-1.4) / rate ≈ 188s ≈ 3m8s.
+	want := "[14/47 chunks · 1.4 GiB / 5.8 GiB · 23 MiB/s · ETA 3m8s]"
+	if got != want {
+		t.Errorf("renderLine = %q, want %q", got, want)
+	}
+}
+
+func TestRenderLine_NoRateYet(t *testing.T) {
+	got := renderLine(0, 47, 0, 1024*1024*1024, 0)
+	want := "[0/47 chunks · 0 B / 1.0 GiB · -- · ETA --]"
+	if got != want {
+		t.Errorf("renderLine = %q, want %q", got, want)
+	}
+}
+
+func TestRenderLine_AllDone(t *testing.T) {
+	got := renderLine(47, 47, 1024*1024*1024, 1024*1024*1024, 10*time.Second)
+	// rate = 1 GiB / 10s = 102.4 MiB/s; ETA = 0.
+	want := "[47/47 chunks · 1.0 GiB / 1.0 GiB · 102 MiB/s · ETA 0s]"
+	if got != want {
+		t.Errorf("renderLine = %q, want %q", got, want)
+	}
+}
