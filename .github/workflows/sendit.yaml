@@ -17,6 +17,7 @@ jobs:
     permissions:
       contents: read # to fetch the repository content
       id-token: write # for signing attestation(s) with GitHub OIDC Token
+      packages: write # for ghcr in an org?
     with:
       output: image
       push: ${{ github.event_name != 'pull_request' }}
