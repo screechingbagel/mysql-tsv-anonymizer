@@ -26,7 +26,7 @@ Output is deterministic for a fixed `--seed` regardless of `-j`: each
 `(table, chunk_index)` pair derives its own RNG seed, so worker scheduling
 does not affect bytes.
 
-## Expected environment / external dependencies
+## Expected environment / external dependencies / notes
 
 - A `mysqlsh util.dumpInstance` directory at format version `2.x`. Only zstd
   compression is supported; the run aborts if any per-table sidecar declares
@@ -35,6 +35,11 @@ does not affect bytes.
 - The dump must contain `@.done.json` (the run-complete marker mysqlsh writes
   last). Incomplete dumps are rejected.
 - No database connection is opened at any point, the tool only reads files on disk.
+
+- [necessary permissions etc for `util.dumpInstance()`](https://dev.mysql.com/doc/mysql-shell/9.7/en/mysql-shell-utilities-dump-instance-schema.html#mysql-shell-utilities-dump-opt-requirements) (note consistency requirements)
+- [necessary permissions etc for `util.loadDump()`](https://dev.mysql.com/doc/mysql-shell/9.7/en/mysql-shell-utilities-load-dump.html#mysql-shell-utilities-load-dump-requirements) (note the global variable `local_infile` needs to be on)
+
+- when using `value: "{{ null }}"` the tool can generate `NULL` values even for `NOT NULL` columns. In most cases `util.loadDump()` should just set the default value instead of `NULL`, [more details on the relevant behavious here](https://dev.mysql.com/doc/refman/8.4/en/data-type-defaults.html)
 
 ## Building
 
