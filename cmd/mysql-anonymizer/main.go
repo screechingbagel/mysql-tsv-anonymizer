@@ -19,6 +19,7 @@ import (
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/config"
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/dump"
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/faker"
+	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/progress"
 )
 
 type opts struct {
@@ -144,11 +145,14 @@ func run(ctx context.Context, o opts) error {
 			totalBytes += size
 		}
 	}
-	_ = totalBytes // wired up in Task 8
-
-	// 8. Run pool.
-	if err := RunPool(ctx, jobs, rc, schemas, o.Seed, o.OutDir, o.Workers); err != nil {
-		return err
+	// 8. Run pool with live progress reporting on stderr.
+	reporter := progress.New(len(jobs), totalBytes, os.Stderr)
+	reporter.Start(ctx)
+	var runErr error
+	defer func() { reporter.Stop(runErr) }()
+	runErr = RunPool(ctx, jobs, rc, schemas, o.Seed, o.OutDir, o.Workers, reporter)
+	if runErr != nil {
+		return runErr
 	}
 
 	// 9. Finalize: copy @.done.json LAST.

@@ -16,6 +16,7 @@ import (
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/dump"
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/faker"
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/idx"
+	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/progress"
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/tsv"
 	lzstd "github.com/screechingbagel/mysql-tsv-anonymizer/internal/zstd"
 )
@@ -37,6 +38,7 @@ func RunPool(
 	jobSeed uint64,
 	outDir string,
 	nWorkers int,
+	reporter *progress.Reporter,
 ) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -63,6 +65,9 @@ func RunPool(
 				if err := processChunk(ctx, j, rc, jobSeed, outDir); err != nil {
 					record(fmt.Errorf("chunk %s@@%d: %w", j.tableKey, j.chunk.Index, err))
 					return
+				}
+				if reporter != nil {
+					reporter.ChunkDone(j.size)
 				}
 			}
 		})
