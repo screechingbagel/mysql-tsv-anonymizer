@@ -104,6 +104,7 @@ func deriveSeed(jobSeed uint64, tableKey string, chunkIdx int) (uint64, uint64) 
 func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint64, outDir string) (err error) {
 	hi, lo := deriveSeed(jobSeed, j.tableKey, j.chunk.Index)
 	f := faker.New(rand.NewPCG(hi, lo))
+	f.SetInvoiceBase(uint64(j.chunk.Index) * faker.InvoiceStride)
 	cc, err := rc.Compile(f)
 	if err != nil {
 		return fmt.Errorf("compile config: %w", err)
