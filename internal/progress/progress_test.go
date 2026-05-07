@@ -97,8 +97,8 @@ func TestReporter_ChunkDoneAccumulates(t *testing.T) {
 func TestReporter_StopPrintsFinalLine(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(2, 2048, &buf)
-	r.isTTY = false    // force non-TTY mode
-	r.tick = time.Hour // disable mid-run ticks
+	r.IsTTY = false    // force non-TTY mode
+	r.Tick = time.Hour // disable mid-run ticks
 	ctx := t.Context()
 	r.Start(ctx)
 	r.ChunkDone(1024)
@@ -116,8 +116,8 @@ func TestReporter_StopPrintsFinalLine(t *testing.T) {
 func TestReporter_StopOnError(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(5, 5000, &buf)
-	r.isTTY = false
-	r.tick = time.Hour
+	r.IsTTY = false
+	r.Tick = time.Hour
 	ctx := t.Context()
 	r.Start(ctx)
 	r.ChunkDone(1000)

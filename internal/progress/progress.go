@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -80,16 +81,17 @@ func renderLine(doneChunks, totalChunks int, doneBytes, totalBytes uint64, elaps
 // production). One Reporter is created per run; workers report completed
 // chunks via ChunkDone, which is safe for concurrent use.
 type Reporter struct {
-	totalChunks int
+	totalChunks uint64
 	totalBytes  uint64
 
 	doneChunks atomic.Uint64
 	doneBytes  atomic.Uint64
 
-	start time.Time
-	out   io.Writer
-	isTTY bool
-	tick  time.Duration
+	start     time.Time
+	startOnce sync.Once
+	out       io.Writer
+	IsTTY     bool
+	Tick      time.Duration
 
 	stopCh chan struct{}
 	doneCh chan struct{}
@@ -100,19 +102,20 @@ type Reporter struct {
 // TTY, 5s on non-TTY. Both are exported as fields for test injection.
 func New(totalChunks int, totalBytes uint64, out io.Writer) *Reporter {
 	r := &Reporter{
-		totalChunks: totalChunks,
+		totalChunks: uint64(totalChunks),
 		totalBytes:  totalBytes,
 		out:         out,
 		stopCh:      make(chan struct{}),
 		doneCh:      make(chan struct{}),
+		start:       time.Now(), // default start time
 	}
 	if f, ok := out.(*os.File); ok {
-		r.isTTY = isCharDevice(f)
+		r.IsTTY = isCharDevice(f)
 	}
-	if r.isTTY {
-		r.tick = 500 * time.Millisecond
+	if r.IsTTY {
+		r.Tick = 500 * time.Millisecond
 	} else {
-		r.tick = 5 * time.Second
+		r.Tick = 5 * time.Second
 	}
 	return r
 }
@@ -127,15 +130,18 @@ func isCharDevice(f *os.File) bool {
 }
 
 // Start launches the ticker goroutine. It exits when ctx is done or Stop
-// is called.
+// is called. It is safe to call multiple times; only the first call starts
+// the goroutine.
 func (r *Reporter) Start(ctx context.Context) {
-	r.start = time.Now()
-	go r.loop(ctx)
+	r.startOnce.Do(func() {
+		r.start = time.Now()
+		go r.loop(ctx)
+	})
 }
 
 func (r *Reporter) loop(ctx context.Context) {
 	defer close(r.doneCh)
-	t := time.NewTicker(r.tick)
+	t := time.NewTicker(r.Tick)
 	defer t.Stop()
 	for {
 		select {
@@ -151,11 +157,11 @@ func (r *Reporter) loop(ctx context.Context) {
 
 func (r *Reporter) render() {
 	line := renderLine(
-		int(r.doneChunks.Load()), r.totalChunks,
+		int(r.doneChunks.Load()), int(r.totalChunks),
 		r.doneBytes.Load(), r.totalBytes,
 		time.Since(r.start),
 	)
-	if r.isTTY {
+	if r.IsTTY {
 		fmt.Fprintf(r.out, "\r\x1b[K%s", line)
 	} else {
 		fmt.Fprintln(r.out, line)
@@ -172,17 +178,30 @@ func (r *Reporter) ChunkDone(compressedBytes uint64) {
 // Stop signals the ticker to exit, waits for it, then prints a final line.
 // If runErr is non-nil the final line is prefixed "aborted at ...".
 func (r *Reporter) Stop(runErr error) {
-	close(r.stopCh)
+	// Ensure loop is terminated if it was started.
+	select {
+	case <-r.stopCh:
+		// already closed
+	default:
+		close(r.stopCh)
+	}
+
+	// Wait for loop to finish if it was started.
+	// If Start was never called, startOnce.Do closes doneCh for us.
+	r.startOnce.Do(func() {
+		close(r.doneCh)
+	})
+
 	<-r.doneCh
 	done := r.doneChunks.Load()
 	bytesDone := r.doneBytes.Load()
 	elapsed := time.Since(r.start)
-	body := renderLine(int(done), r.totalChunks, bytesDone, r.totalBytes, elapsed)
+	body := renderLine(int(done), int(r.totalChunks), bytesDone, r.totalBytes, elapsed)
 	prefix := "done "
 	if runErr != nil {
 		prefix = fmt.Sprintf("aborted at %d/%d chunks ", done, r.totalChunks)
 	}
-	if r.isTTY {
+	if r.IsTTY {
 		fmt.Fprintf(r.out, "\r\x1b[K%s%s\n", prefix, body)
 	} else {
 		fmt.Fprintf(r.out, "%s%s\n", prefix, body)
