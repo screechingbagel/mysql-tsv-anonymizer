@@ -19,7 +19,7 @@ RUN curl -L -O "https://dev.mysql.com/get/${REPO_FILE}" && \
     rpm -i ${REPO_FILE} && \
     rm ${REPO_FILE}
 
-RUN microdnf install -y mysql-shell && \
+RUN microdnf install -y mysql-shell diffutils && \
     microdnf clean all
 
 COPY --from=peakcom/s5cmd:v2.3.0 /s5cmd /usr/local/bin/
