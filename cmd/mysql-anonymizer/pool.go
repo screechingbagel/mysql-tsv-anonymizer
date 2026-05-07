@@ -24,6 +24,7 @@ type job struct {
 	tableKey string
 	schema   *tableSchema
 	chunk    dump.ChunkEntry
+	size     uint64 // compressed bytes of the input chunk; used for progress reporting
 }
 
 // RunPool runs nWorkers goroutines processing jobs. Returns the first error

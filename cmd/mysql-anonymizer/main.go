@@ -129,13 +129,22 @@ func run(ctx context.Context, o opts) error {
 		return err
 	}
 
-	// 7. Build job list.
+	// 7. Build job list. Stat each chunk so the progress reporter has a
+	// per-job byte size without needing a second pass over the manifest.
 	var jobs []job
+	var totalBytes uint64
 	for k := range schemas {
 		for _, c := range manifest.Tables[k].Chunks {
-			jobs = append(jobs, job{tableKey: k, schema: schemas[k], chunk: c})
+			fi, err := os.Stat(c.DataPath)
+			if err != nil {
+				return fmt.Errorf("stat chunk %s: %w", c.DataPath, err)
+			}
+			size := uint64(fi.Size())
+			jobs = append(jobs, job{tableKey: k, schema: schemas[k], chunk: c, size: size})
+			totalBytes += size
 		}
 	}
+	_ = totalBytes // wired up in Task 8
 
 	// 8. Run pool.
 	if err := RunPool(ctx, jobs, rc, schemas, o.Seed, o.OutDir, o.Workers); err != nil {
