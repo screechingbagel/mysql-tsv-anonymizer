@@ -107,7 +107,7 @@ Column names not present in the dump's per-table sidecar (`<schema>@<table>.json
 | `fakerAddress`, `fakerStreetAddress`, `fakerSecondaryAddress`, `fakerCity`, `fakerPostcode` | address parts |
 | `fakerCompany` | company name |
 | `fakerIBAN`, `fakerSwift`, `fakerEIN` | shape-only fake IBAN / BIC / EIN |
-| `fakerInvoice` | `INV-XXXXXXXX` |
+| `fakerInvoice` | `INV-` + 16-digit number, ascending per chunk (e.g. `INV-0000000000000042`) |
 | `uuidv4` | UUIDv4 string |
 | `randAlphaNum n`, `randNumeric n` | random strings of length `n` |
 | `upper`, `lower` | string-pipe helpers |
