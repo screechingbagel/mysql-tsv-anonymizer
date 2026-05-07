@@ -21,7 +21,6 @@ func TestDeterminism_SameSeedSameOutput(t *testing.T) {
 		{"IBAN", func(f *Faker) string { return f.IBAN() }},
 		{"SWIFT", func(f *Faker) string { return f.SWIFT() }},
 		{"EIN", func(f *Faker) string { return f.EIN() }},
-		{"Invoice", func(f *Faker) string { return f.Invoice() }},
 		{"SecondaryAddress", func(f *Faker) string { return f.SecondaryAddress() }},
 	}
 	for _, tc := range cases {
@@ -47,12 +46,45 @@ func TestDeterminism_DifferentSeedsDiffer(t *testing.T) {
 	}
 }
 
-func TestInvoice_Format(t *testing.T) {
+func TestInvoice_FormatAndAscending(t *testing.T) {
 	f := newDeterministic()
-	for range 20 {
+	prev := ""
+	for i := range 20 {
 		inv := f.Invoice()
-		if !strings.HasPrefix(inv, "INV-") || len(inv) != 12 {
-			t.Errorf("Invoice %q: want INV-<8 alphanumeric chars>", inv)
+		if !strings.HasPrefix(inv, "INV-") || len(inv) != 4+16 {
+			t.Errorf("Invoice %q: want INV- + 16 digits", inv)
 		}
+		if i > 0 && inv <= prev {
+			t.Errorf("Invoice not ascending: prev=%q cur=%q", prev, inv)
+		}
+		prev = inv
+	}
+}
+
+func TestInvoice_StartsAtZero(t *testing.T) {
+	f := newDeterministic()
+	if got, want := f.Invoice(), "INV-0000000000000000"; got != want {
+		t.Errorf("first invoice = %q, want %q", got, want)
+	}
+	if got, want := f.Invoice(), "INV-0000000000000001"; got != want {
+		t.Errorf("second invoice = %q, want %q", got, want)
+	}
+}
+
+func TestInvoice_SetBaseAndReset(t *testing.T) {
+	f := newDeterministic()
+	f.Invoice() // counter = 1
+	f.Invoice() // counter = 2
+	f.SetInvoiceBase(0)
+	if got, want := f.Invoice(), "INV-0000000000000000"; got != want {
+		t.Errorf("after SetInvoiceBase(0): got %q, want %q", got, want)
+	}
+}
+
+func TestInvoice_BaseStridesAcrossChunks(t *testing.T) {
+	f := newDeterministic()
+	f.SetInvoiceBase(InvoiceStride) // chunk 1
+	if got, want := f.Invoice(), "INV-0000001000000000"; got != want {
+		t.Errorf("chunk-1 first invoice = %q, want %q", got, want)
 	}
 }

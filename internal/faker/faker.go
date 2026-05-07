@@ -8,6 +8,7 @@
 package faker
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"strings"
 	"text/template"
@@ -19,12 +20,17 @@ import (
 // "this cell should be encoded as a SQL NULL." anon.Apply translates it.
 const SentinelNULL = "\x00\x00mysql-anonymizer-NULL\x00\x00"
 
+// InvoiceStride is the number of invoice IDs reserved per worker chunk.
+const InvoiceStride = 1_000_000_000
+
 // Faker is a per-worker fake-data generator. Construct one per worker with New
 // and reuse it for the lifetime of that worker; do not share across goroutines
 // (gofakeit.Faker is not safe for concurrent use unless explicitly locked, and
 // we deliberately leave locking off for throughput).
 type Faker struct {
-	gf *gofakeit.Faker
+	gf             *gofakeit.Faker
+	invoiceBase    uint64
+	invoiceCounter uint64
 }
 
 // New returns a Faker whose randomness is sourced from src. src is a
@@ -55,10 +61,23 @@ func (f *Faker) SecondaryAddress() string {
 	return "Apt. " + f.gf.DigitN(3)
 }
 
-// Invoice returns a fake invoice identifier of the form "INV-XXXXXXXX",
-// where the suffix is 8 alphanumeric characters drawn from this Faker's RNG.
+// SetInvoiceBase sets the starting offset for the Invoice generator and resets
+// its internal counter. Used to ensure non-overlapping ranges across chunks.
+func (f *Faker) SetInvoiceBase(b uint64) {
+	f.invoiceBase = b
+	f.invoiceCounter = 0
+}
+
+// Invoice returns a fake invoice identifier of the form "INV-0000000000000000".
+// IDs are produced sequentially from the base set by SetInvoiceBase.
+// Panics if the number of IDs generated exceeds InvoiceStride.
 func (f *Faker) Invoice() string {
-	return "INV-" + f.gf.Password(true, true, true, false, false, 8)
+	if f.invoiceCounter >= InvoiceStride {
+		panic(fmt.Sprintf("faker: InvoiceStride (%d) exceeded", InvoiceStride))
+	}
+	id := f.invoiceBase + f.invoiceCounter
+	f.invoiceCounter++
+	return fmt.Sprintf("INV-%016d", id)
 }
 
 // FuncMap returns a text/template.FuncMap exposing this Faker's generators.
