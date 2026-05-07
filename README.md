@@ -39,7 +39,7 @@ does not affect bytes.
 - [necessary permissions etc for `util.dumpInstance()`](https://dev.mysql.com/doc/mysql-shell/9.7/en/mysql-shell-utilities-dump-instance-schema.html#mysql-shell-utilities-dump-opt-requirements) (note consistency requirements)
 - [necessary permissions etc for `util.loadDump()`](https://dev.mysql.com/doc/mysql-shell/9.7/en/mysql-shell-utilities-load-dump.html#mysql-shell-utilities-load-dump-requirements) (note the global variable `local_infile` needs to be on)
 
-- when using `value: "{{ null }}"` the tool can generate `NULL` values even for `NOT NULL` columns. In most cases `util.loadDump()` should just set the default value instead of `NULL`, [more details on the relevant behavious here](https://dev.mysql.com/doc/refman/8.4/en/data-type-defaults.html)
+- when using `value: "{{ null }}"` the tool can generate `NULL` values even for `NOT NULL` columns. In most cases `util.loadDump()` should just set the default value instead of `NULL`, [more details on the relevant behaviours here](https://dev.mysql.com/doc/refman/8.4/en/data-type-defaults.html)
 
 ## Building
 
