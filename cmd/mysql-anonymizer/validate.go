@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/screechingbagel/mysql-tsv-anonymizer/internal/config"
@@ -26,56 +28,82 @@ func tablePart(manifestKey string) string {
 }
 
 // Validate cross-checks rc (the user config) against m (the dump manifest).
-// It returns a map keyed by the manifest key ("<schema>@<table>") for every
-// table referenced in the config, or an error describing the first mismatch.
+// On success it returns a map keyed by the manifest key ("<schema>@<table>")
+// for every table referenced in the config, and a nil error. On failure it
+// returns a nil map and an error that is the sorted join of *every* problem
+// found — callers must not use the map when the error is non-nil.
 func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, error) {
-	// Parse every table's per-table json once, asserting compression.
+	var problems []error
+	add := func(err error) { problems = append(problems, err) }
+
+	// Phase 1: parse every table's per-table json once, asserting compression.
+	// This sweep covers unconfigured tables too: a non-zstd table anywhere in
+	// the dump is a hard error. metas holds only tables that parsed cleanly and
+	// are zstd; tables absent from it had a problem recorded here (or, for a
+	// configured table with no sidecar and no chunks, are handled in phase 2).
 	metas := make(map[string]*dump.TableMeta, len(m.Tables))
 	for tableKey, te := range m.Tables {
 		if te.MetaPath == "" {
-			// Unconfigured tables with missing sidecar are a dump error too,
-			// but only flag them if the dump claims to have chunks for the table.
 			if len(te.Chunks) > 0 {
-				return nil, fmt.Errorf("validate: table %q has chunks but no per-table json sidecar", tableKey)
+				add(fmt.Errorf("validate: table %q has chunks but no per-table json sidecar", tableKey))
 			}
 			continue
 		}
 		tm, err := dump.ReadTableMeta(te.MetaPath)
 		if err != nil {
-			return nil, fmt.Errorf("validate: read meta for table %q: %w", tableKey, err)
+			add(fmt.Errorf("validate: read meta for table %q: %w", tableKey, err))
+			continue
 		}
 		if tm.Compression != "zstd" {
-			return nil, fmt.Errorf("validate: table %q has compression %q; only zstd is supported",
-				tableKey, tm.Compression)
+			add(fmt.Errorf("validate: table %q has compression %q; only zstd is supported",
+				tableKey, tm.Compression))
+			continue
 		}
 		metas[tableKey] = tm
 	}
 
+	// Phase 2: per configured table. Iterate config tables in sorted order so
+	// the per-table column text below is produced in a stable order even before
+	// the final accumulator sort.
+	cfgTables := make([]string, 0, len(rc.Filters))
+	for t := range rc.Filters {
+		cfgTables = append(cfgTables, t)
+	}
+	sort.Strings(cfgTables)
+
 	schemas := make(map[string]*tableSchema, len(rc.Filters))
-	for tableKey, tf := range rc.Filters {
+	for _, tableKey := range cfgTables {
+		tf := rc.Filters[tableKey]
+
 		var matches []string
 		for k := range m.Tables {
 			if tablePart(k) == tableKey {
 				matches = append(matches, k)
 			}
 		}
+		sort.Strings(matches)
 		switch len(matches) {
 		case 0:
-			return nil, fmt.Errorf("validate: config references table %q but it is not in the dump", tableKey)
+			add(fmt.Errorf("validate: config references table %q but it is not in the dump", tableKey))
+			continue
 		case 1:
 			// proceed
 		default:
-			return nil, fmt.Errorf("validate: table %q is ambiguous across schemas: %s", tableKey, strings.Join(matches, ", "))
+			add(fmt.Errorf("validate: table %q is ambiguous across schemas: %s", tableKey, strings.Join(matches, ", ")))
+			continue
 		}
 
 		matched := matches[0]
 		tm, ok := metas[matched]
 		if !ok {
-			// Should be unreachable: matched key came from m.Tables; the loop
-			// above either parsed its meta or errored. The only path that skips
-			// is MetaPath == "" with no chunks — for a configured table that's
-			// a dump error.
-			return nil, fmt.Errorf("validate: configured table %q has no per-table json sidecar", matched)
+			// matched is in m.Tables but not in metas, so phase 1 already
+			// recorded a problem for it (chunks without sidecar, unreadable
+			// sidecar, or non-zstd) — unless it is a configured table with no
+			// sidecar and no chunks, which phase 1 ignores. Cover only that.
+			if te := m.Tables[matched]; te.MetaPath == "" && len(te.Chunks) == 0 {
+				add(fmt.Errorf("validate: configured table %q has no per-table json sidecar", matched))
+			}
+			continue
 		}
 
 		cols := tm.Options.Columns
@@ -83,16 +111,26 @@ func Validate(rc *config.RawConfig, m *dump.Manifest) (map[string]*tableSchema, 
 		for _, c := range cols {
 			colSet[c] = struct{}{}
 		}
-		for colName := range tf.Columns {
+		colNames := make([]string, 0, len(tf.Columns))
+		for c := range tf.Columns {
+			colNames = append(colNames, c)
+		}
+		sort.Strings(colNames)
+		for _, colName := range colNames {
 			if _, ok := colSet[colName]; !ok {
-				return nil, fmt.Errorf("validate: config references column %q.%q but it is not in the dump (have %v)",
-					tableKey, colName, cols)
+				add(fmt.Errorf("validate: config references column %q.%q but it is not in the dump (have %v)",
+					tableKey, colName, cols))
 			}
 		}
 		schemas[matched] = &tableSchema{
 			ConfigTable: tableKey,
 			Columns:     cols,
 		}
+	}
+
+	if len(problems) > 0 {
+		sort.Slice(problems, func(i, j int) bool { return problems[i].Error() < problems[j].Error() })
+		return nil, errors.Join(problems...)
 	}
 	return schemas, nil
 }
