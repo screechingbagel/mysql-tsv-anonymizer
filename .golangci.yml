@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  settings:
+    errcheck:
+      # Writing a status line to stderr can't fail in any actionable way.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    rules:
+      # Test helpers do plenty of unchecked Close()/Write() on in-memory or
+      # temp-dir fixtures; errcheck noise there isn't worth the churn.
+      - path: '_test\.go$'
+        linters:
+          - errcheck
