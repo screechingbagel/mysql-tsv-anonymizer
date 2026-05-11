@@ -299,3 +299,145 @@ func TestRun_RejectsVersion3(t *testing.T) {
 		t.Errorf("expected error mentioning version 3.0.0, got: %v", err)
 	}
 }
+
+func TestValidate_ReportsAllMissingColumns(t *testing.T) {
+	dir := mkTinyDump(t)
+	m, err := dump.WalkManifest(dir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	rc := mkConfig(t, `
+filters:
+  users:
+    columns:
+      aaa:
+        value: "x"
+      zzz:
+        value: "y"
+`)
+	_, err = Validate(rc, m)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "aaa") || !strings.Contains(msg, "zzz") {
+		t.Errorf("expected error to mention both missing columns, got: %v", err)
+	}
+}
+
+func TestValidate_ReportsTableAndColumnTogether(t *testing.T) {
+	dir := mkTinyDump(t)
+	m, err := dump.WalkManifest(dir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	rc := mkConfig(t, `
+filters:
+  users:
+    columns:
+      nope:
+        value: "x"
+  ghost:
+    columns:
+      whatever:
+        value: "y"
+`)
+	_, err = Validate(rc, m)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"users"."nope"`) {
+		t.Errorf("expected error to mention users.nope, got: %v", err)
+	}
+	if !strings.Contains(msg, "ghost") {
+		t.Errorf("expected error to mention missing table ghost, got: %v", err)
+	}
+}
+
+func TestValidate_ReportsNonZstdAndMissingColumn(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"@.done.json":             `{}`,
+		"@.json":                  `{"version":"2.0.1","dumper":"synthetic"}`,
+		"fx.json":                 `{}`,
+		"fx.sql":                  ``,
+		"fx@users.json":           `{"compression":"zstd","extension":"tsv.zst","options":{"columns":["id","name","email"]}}`,
+		"fx@users.sql":            ``,
+		"fx@users@@0.tsv.zst":     ``,
+		"fx@users@@0.tsv.zst.idx": ``,
+		"fx@orders.json":          `{"compression":"none","extension":"tsv","options":{"columns":["id","amount"]}}`,
+		"fx@orders.sql":           ``,
+		"fx@orders@@0.tsv":        ``,
+		"fx@orders@@0.tsv.idx":    ``,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	m, err := dump.WalkManifest(dir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	rc := mkConfig(t, `
+filters:
+  orders:
+    columns:
+      amount:
+        value: "0"
+  users:
+    columns:
+      nope:
+        value: "x"
+`)
+	_, err = Validate(rc, m)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "zstd") {
+		t.Errorf("expected error to mention the non-zstd table, got: %v", err)
+	}
+	if !strings.Contains(msg, `"users"."nope"`) {
+		t.Errorf("expected error to mention users.nope, got: %v", err)
+	}
+	if strings.Contains(msg, "no per-table json sidecar") {
+		t.Errorf("non-zstd table should not also be reported as missing its sidecar, got: %v", err)
+	}
+}
+
+func TestValidate_ErrorOrderIsDeterministic(t *testing.T) {
+	dir := mkTinyDump(t)
+	m, err := dump.WalkManifest(dir)
+	if err != nil {
+		t.Fatalf("WalkManifest: %v", err)
+	}
+	rc := mkConfig(t, `
+filters:
+  users:
+    columns:
+      c1:
+        value: "x"
+      c2:
+        value: "x"
+      c3:
+        value: "x"
+      c4:
+        value: "x"
+`)
+	_, first := Validate(rc, m)
+	if first == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	want := first.Error()
+	for i := 0; i < 20; i++ {
+		_, err := Validate(rc, m)
+		if err == nil {
+			t.Fatalf("iteration %d: expected error, got nil", i)
+		}
+		if got := err.Error(); got != want {
+			t.Fatalf("iteration %d: Validate output not stable:\n got %q\nwant %q", i, got, want)
+		}
+	}
+}
