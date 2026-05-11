@@ -125,12 +125,12 @@ func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint
 	if err != nil {
 		return err
 	}
-	defer inF.Close()
+	defer func() { _ = inF.Close() }()
 	zr, err := lzstd.NewReader(inF)
 	if err != nil {
 		return err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	dstData := filepath.Join(outDir, filepath.Base(j.chunk.DataPath))
 	dstIdx := filepath.Join(outDir, filepath.Base(j.chunk.IdxPath))
@@ -147,13 +147,15 @@ func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint
 			_ = os.Remove(tmpIdx)
 		}
 	}()
-	defer outF.Close()
+	// Safety net for the early-return paths only; the happy path closes outF
+	// explicitly below (before the rename). Re-closing returns os.ErrClosed.
+	defer func() { _ = outF.Close() }()
 
 	idxF, err := os.Create(tmpIdx)
 	if err != nil {
 		return err
 	}
-	defer idxF.Close()
+	defer func() { _ = idxF.Close() }()
 
 	zw, err := lzstd.NewWriter(outF)
 	if err != nil {
@@ -175,10 +177,19 @@ func processChunk(ctx context.Context, j job, rc *config.RawConfig, jobSeed uint
 	if err := outF.Sync(); err != nil {
 		return err
 	}
+	// Close before the rename: on a FUSE / object-store mount this is the
+	// operation that actually persists the file, and a failure here must be
+	// caught while the cleanup defer's .tmp paths still exist.
+	if err := outF.Close(); err != nil {
+		return err
+	}
 	if err := idx.Write(idxF, tw.BytesWritten()); err != nil {
 		return err
 	}
 	if err := idxF.Sync(); err != nil {
+		return err
+	}
+	if err := idxF.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpData, dstData); err != nil {
